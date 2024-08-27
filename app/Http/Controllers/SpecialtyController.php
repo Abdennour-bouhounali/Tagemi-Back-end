@@ -2,12 +2,13 @@
 
 namespace App\Http\Controllers;
 
+use Carbon\Carbon;
 use App\Models\User;
 use App\Models\Specialty;
 use Illuminate\Http\Request;
-use Illuminate\Routing\Controllers\HasMiddleware;
-use Illuminate\Routing\Controllers\Middleware;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Routing\Controllers\Middleware;
+use Illuminate\Routing\Controllers\HasMiddleware;
 
 class SpecialtyController extends Controller implements HasMiddleware
 {
@@ -23,7 +24,8 @@ class SpecialtyController extends Controller implements HasMiddleware
      */
     public function index()
     {
-   
+
+            
             $specialties = Specialty::with('users')->get();
             return response()->json(['specialties' => $specialties]);
 
@@ -42,17 +44,32 @@ class SpecialtyController extends Controller implements HasMiddleware
           // Validate the request data
           $validatedData = $request->validate([
             'name' => 'required|string|max:255',
-            'duration' => 'required|integer'
+            'duration' => 'required|integer',
+            'Total_Duration'=> ['required', 'date_format:H:i:s'],
+            'Addition_Capacitif'=> 'required|integer'
+        ], [
+            'Total_Duration.date_format' => 'The Total Duration must be in the format HH:MM:SS.'
         ]);
+
+        $Total_Duration = Carbon::createFromFormat('H:i:s', $validatedData['Total_Duration']);
+
+        $Total_Duration_in_minutes = $Total_Duration->hour * 60 + $Total_Duration->minute + $Total_Duration->second / 60;
+
+        // Perform the division
+
+        $result = ceil($Total_Duration_in_minutes / $validatedData['duration']);
+
 
         // Store the appointment data
         $speciality = Specialty::create([
             'name' => $validatedData['name'],
-            'duration' =>$validatedData['duration']
+            'duration' =>$validatedData['duration'],
+            'Max_Number'=>$result,
+            'Addition_Capacitif'=>$validatedData['Addition_Capacitif']
         ]);
 
         // Return a response
-        return response()->json(['message' => 'Speciality created successfully', 'appointment' => $speciality], 201);
+        return response()->json(['message' => 'Speciality created successfully', 'speciality' => $speciality,'Total_Duration'=>$Total_Duration], 201);
 
         }else{
             return ['message' => 'You are not autorized'];
@@ -86,7 +103,8 @@ class SpecialtyController extends Controller implements HasMiddleware
             // Validate the request data
             $validatedData = $request->validate([
                 'name' => 'required|string|max:255',
-                'duration' => 'required|integer'
+                'duration' => 'required|integer',
+                'Total_Duration'=> ['required', 'date_format:H:i:s']
             ]);
 
             // Update the specialty data

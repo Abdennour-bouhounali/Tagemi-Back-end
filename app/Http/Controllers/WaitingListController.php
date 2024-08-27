@@ -51,8 +51,37 @@ class WaitingListController extends Controller implements HasMiddleware
         }else{
             return ['message' => 'You are not autorized'];
         }
+    }
 
 
+    public function getwaitinglist(){
+        // return response()->json(['message'=>'hi']);
+        // Retrieve the first 10 'Present' status appointments for each specialty
+        $appointments = Appointment::select('specialty_id', 'patient_id', 'name')
+        ->where('status', 'Present')
+        ->orderBy('specialty_id')
+        ->orderBy('position')
+        ->get()
+        ->groupBy('specialty_id')
+        ->map(function ($appointments) {
+            // Get the first 10 appointments for each specialty
+            return $appointments->take(10)->values();
+        });
+
+        // Format the data into a structured array
+        $data = $appointments->mapWithKeys(function ($appointments, $specialtyId) {
+        return [
+            $specialtyId => $appointments->map(function ($appointment) {
+                return [
+                    'patient_id' => $appointment->patient_id,
+                    'name' => $appointment->name,
+                ];
+            }),
+        ];
+        });
+
+        // Return the data as JSON
+        return response()->json($data);
     }
     public function deleteAppointmentsAndAdmins()
     {
@@ -135,9 +164,9 @@ class WaitingListController extends Controller implements HasMiddleware
 
         if($user_role == 4 || $user_role == 1){
             // Check if there are any appointments
-                if ($appointment->isEmpty()) {
-                    return response()->json(['message' => 'No appointments found for this patient'], 404);
-                }
+                // if ($appointment->isEmpty()) {
+                //     return response()->json(['message' => 'No appointments found for this patient'], 404);
+                // }
                 // Get the current highest position for the given specialty
                 $maxPosition = Appointment::where('specialty_id', $appointment->specialty_id)->max('position');
 

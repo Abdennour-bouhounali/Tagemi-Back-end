@@ -29,12 +29,17 @@ class AppointmentController extends Controller implements HasMiddleware
         $formattedTime = $currentTime->format('H:i:s');
         return $formattedTime;
     }
+
+
+
     public static function middleware()
     {
         return [
-            new Middleware('auth:sanctum',except:['index','show'])
+            new Middleware('auth:sanctum',except:['index','show','getPresentPatientsBySpecialty'])
         ];
     }
+
+
 
  
     /**
@@ -65,10 +70,12 @@ class AppointmentController extends Controller implements HasMiddleware
     
         // Get the authenticated user's ID
         $userId = auth()->user()->id;
-    
-        // Find the latest patient_id and increment it
+         // Find the latest patient_id and increment it
         $lastAppointment = Appointment::orderBy('patient_id', 'desc')->first();
+        
         $nextPatientId = $lastAppointment ? $lastAppointment->patient_id + 1 : 1;
+
+
     
         // Starting time for appointments
         $startingTime = '08:00:00';
@@ -76,41 +83,84 @@ class AppointmentController extends Controller implements HasMiddleware
         // Create appointments for each specialty
         $appointments = [];
         $minTime = new DateTime($Maxtime);
-    
+        $specialtyStatusDict = [];
+        $waitinglist_message = '';
+        $message = '';
+
         foreach ($validatedData['specialties'] as $specialty) {
             $specialtyId = $specialty['specialty_id'];
+            $Speciality_chosed = Specialty::find($specialtyId);
+
+            $specialtyStatusDict[$specialtyId] = $Speciality_chosed['Flag'];
             
-            // Retrieve the duration for the specialty in minutes
-            $specialtyDuration = Specialty::find($specialtyId)->duration; // Assuming the duration is stored in minutes
-            
-            // Calculate the total number of minutes to add to the starting time
-            $appointmentCount = Appointment::where('specialty_id', $specialtyId)->count();
-            $totalMinutesToAdd = $appointmentCount * $specialtyDuration;
-    
-            // Calculate the new time
-            $time = new DateTime($startingTime);
-            $time->add(new DateInterval('PT' . $totalMinutesToAdd . 'M'));
-            $specialty = Specialty::find($specialtyId);
-            if ($specialty) {
-                $specialty->specialty_time = $time->format('H:i:s'); // Assuming `specialty_time` is a column in your specialties table
-                $specialty->save();
+
+            if($Speciality_chosed['Flag'] == 'Open'){
+
+
+
+            }elseif($Speciality_chosed['Flag'] == 'WaitingList'){
+
+                if($waitinglist_message !== '' ){
+
+                    $waitinglist_message = $waitinglist_message . ' and ' . $Speciality_chosed['name'];
+                }else{
+                    $waitinglist_message = $Speciality_chosed['name'];
+                }
+
             }
-            
-            if ($time < $minTime) {
-                $minTime = $time;
+
+        }
+
+
+        
+
+        $open = false;
+        foreach ($validatedData['specialties'] as $specialty) {
+            $specialtyId = $specialty['specialty_id'];
+
+                if($Speciality_chosed['Flag'] == 'Open'){
+
+                
+                // Retrieve the duration for the specialty in minutes
+                $specialtyDuration = Specialty::find($specialtyId)->duration; // Assuming the duration is stored in minutes
+
+                // Calculate the total number of minutes to add to the starting time
+                $appointmentCount = Appointment::where('specialty_id', $specialtyId)->count();
+                $totalMinutesToAdd = $appointmentCount * $specialtyDuration;
+        
+                // Calculate the new time
+                $time = new DateTime($startingTime);
+                $time->add(new DateInterval('PT' . $totalMinutesToAdd . 'M'));
+                $specialty = Specialty::find($specialtyId);
+                if ($specialty) {
+                    $specialty->specialty_time = $time->format('H:i:s'); // Assuming `specialty_time` is a column in your specialties table
+                    $specialty->save();
+                }
+                
+                if ($time < $minTime) {
+                    $minTime = $time;
+                }
+                $open = true;
             }
         }
+
+        if($open){
+            $message = 'نرجوا المجيء على الساعة ' . $minTime->format('H:i');
+        }
+
     
         // Format the minimum time
         $formattedMinTime = $minTime->format('H:i:s');
-    
+
         // Create appointments with the minimum time
         foreach ($validatedData['specialties'] as $specialty) {
             $specialtyId = $specialty['specialty_id'];
-    
+            $Speciality_chosed = Specialty::find($specialtyId);
+
             // Get the current highest position for the given specialty
             $maxPosition = Appointment::where('specialty_id', $specialtyId)->max('position');
-    
+
+            if($maxPosition < $Speciality_chosed['Max_Number']){
             // Assign the next position
             $position = $maxPosition ? $maxPosition + 1 : 1;
     
@@ -123,10 +173,55 @@ class AppointmentController extends Controller implements HasMiddleware
                 'time' => $formattedMinTime,
                 'position' => $position
             ]);
+
+            }else{
+                // Ensure $specialty is not null
+                if ($Speciality_chosed) {
+                    // Count the number of appointments with status 'Waiting List'
+                    $waitingListNumber = Appointment::where('status', 'Waiting List')
+                                                    ->where('specialty_id', $specialtyId)
+                                                    ->count();
+
+                    // Get the capacity for the specialty
+                    $specialtyAdditionCapacity = $Speciality_chosed->Addition_Capacitif;
+
+                    // Check if the waiting list exceeds the specialty's capacity
+                    if ($waitingListNumber >= $specialtyAdditionCapacity) {
+                        // Mark the specialty as closed
+                        $Speciality_chosed->Flag = 'Closed';
+
+                    } else {
+                        // Mark the specialty as in the waiting list
+                        $Speciality_chosed->Flag = 'WaitingList';
+
+                        // Determine the next position in the list
+                        $position = $maxPosition ? $maxPosition + 1 : 1;
+
+                        // Create a new appointment
+                        $appointments[] = Appointment::create([
+                            'user_id' => $userId,
+                            'name' => $validatedData['name'],
+                            'patient_id' => $nextPatientId,
+                            'specialty_id' => $specialtyId,
+                            'specialty_order' => 1,
+                            'time' => $formattedMinTime,
+                            'position' => $position,
+                            'status' => 'Waiting List'
+                        ]);
+                    }
+
+                    // Save the updated specialty
+                    $Speciality_chosed->save();
+                }
+
+
+                
+
+            }
         }
     
         // Return a response
-        return response()->json(['message' => 'Appointments created successfully', 'appointments' => $appointments, 'minTime' => $formattedMinTime], 201);
+        return response()->json(['message' => $message, 'appointments' => $appointments, 'minTime' => $formattedMinTime,'waitinglist_message'=>$waitinglist_message], 201);
     }
     
     public function ConfirmPresenceDelay($id){

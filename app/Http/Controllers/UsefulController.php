@@ -6,6 +6,7 @@ use Carbon\Carbon;
 use App\Models\Appointment;
 use Illuminate\Http\Request;
 use App\Exports\AppointmentsExport;
+use App\Models\Parameter;
 use Maatwebsite\Excel\Facades\Excel;
 
 
@@ -73,6 +74,28 @@ class UsefulController extends Controller
         // ]);
         return Excel::download(new AppointmentsExport, 'GreenhouseData.csv');
         // return $excelFile->deleteFileAfterSend(true); // Optional: delete the file after sending
+    }
+
+    public function startVisitDay(Request $request){
+        $parameters = Parameter::find(1);
+        $parameters->is_day_visits = !$parameters->is_day_visits;
+        $parameters->save();
+        return response()->json($parameters->is_day_visits);
+    }
+
+    public function DisplayHideAuth(Request $request){
+        $parameters = Parameter::find(1);
+        $parameters->is_aut_displayed = !$parameters->is_aut_displayed;
+        $parameters->save();
+        return response()->json($parameters->is_aut_displayed);
+    }
+
+    public function getstartDay(){
+        return Parameter::find(1)->is_day_visits;
+    }
+
+    public function getdisplayAuth(){
+        return Parameter::find(1)->is_aut_displayed;
     }
 
     
