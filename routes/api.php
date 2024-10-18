@@ -37,7 +37,6 @@ Route::get('/user',function(Request $request){
 })->middleware('auth:sanctum');
 
 Route::apiResource('activities', ActivityController::class);
-// Route::get('activities/{id}',[ActivityController::class,'ActivityByType']);
 Route::apiResource('appointment',AppointmentController::class);
 Route::post('appointment/ConfirmPresence/{id}',[AppointmentController::class,'ConfirmPresence']);
 Route::post('appointment/ConfirmPresenceDelay/{id}',[AppointmentController::class,'ConfirmPresenceDelay']);

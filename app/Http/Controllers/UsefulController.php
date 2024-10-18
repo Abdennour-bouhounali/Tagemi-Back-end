@@ -63,17 +63,8 @@ class UsefulController extends Controller
     public function exportAppointments(Request $request)
     {
 
-        // $fileName = 'appointments.xlsx'; // Specify the file name with the correct extension
-
-        // // Generate the Excel file using the AppointmentsExport class
-        // $excelFile = Excel::download(new AppointmentsExport(), $fileName);
-    
-        // // Return a response to download the generated file
-        // return response()->download($excelFile, 'appointments.xlsx', [
-        //     'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        // ]);
         return Excel::download(new AppointmentsExport, 'GreenhouseData.csv');
-        // return $excelFile->deleteFileAfterSend(true); // Optional: delete the file after sending
+        
     }
 
     public function startVisitDay(Request $request){
