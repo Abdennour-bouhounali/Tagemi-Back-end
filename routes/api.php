@@ -26,6 +26,9 @@ Route::get('/volunteers', [VolunteerController::class, 'index']);
 Route::post('/volunteers', [VolunteerController::class, 'store']);
 Route::delete('/volunteers/{id}', [VolunteerController::class, 'destroy']);
 
+Route::get('/testing',function(){
+    return 'hello world!';
+});
 
 Route::post('/contacts', [ContactController::class, 'store']);
 Route::get('/contacts', [ContactController::class, 'index']);
