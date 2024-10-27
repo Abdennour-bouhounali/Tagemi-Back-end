@@ -1,0 +1,40 @@
+name: Deploy React App and Laravel Backend to Hostinger
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy-backend:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Add Hostinger to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -p ${{ secrets.HOSTINGER_PORT }} ${{ secrets.HOSTINGER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Set up SSH
+        uses: webfactory/ssh-agent@v0.5.3
+        with:
+          ssh-private-key: ${{ secrets.HOSTINGER_PRIVATE_KEY }}
+
+      - name: Deploy Laravel Backend to Hostinger
+        run: |
+          # Copy the backend filess
+          scp -P ${{ secrets.HOSTINGER_PORT }} -r * ${{ secrets.HOSTINGER_USERNAME }}@${{ secrets.HOSTINGER_HOST }}:/home/u412486568/domains/api.tagemi-foundation.org
+
+          # SSH into the server to run Laravel commands
+          ssh -p ${{ secrets.HOSTINGER_PORT }} ${{ secrets.HOSTINGER_USERNAME }}@${{ secrets.HOSTINGER_HOST }} << 'EOF'
+            cd /home/u412486568/domains/api.tagemi-foundation.org
+            composer.phar install --no-dev  # Install production dependencies
+            php artisan migrate --force  # Run migrations
+            php artisan cache:clear  # Clear application cache
+            php artisan config:cache  # Cache the configuration
+            php artisan route:cache  # Cache the routes
+            php artisan view:clear  # Clear view cache
+          EOF
