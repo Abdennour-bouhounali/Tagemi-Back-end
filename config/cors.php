@@ -22,6 +22,7 @@ return [
     'allowed_origins' => ['*'],
 
     'allowed_origins_patterns' => ['https://tagemi-foundation.org'],
+    // 'allowed_origins_patterns' => ['http://localhost:8000'],
 
     'allowed_headers' => ['*'],
 

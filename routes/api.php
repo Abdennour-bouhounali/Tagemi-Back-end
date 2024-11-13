@@ -35,9 +35,9 @@ Route::get('/contacts', [ContactController::class, 'index']);
 Route::delete('/contacts/{id}', [ContactController::class, 'destroy']);
 
 
-Route::get('/user',function(Request $request){
-    return $request->user();
-})->middleware('auth:sanctum');
+// Route::get('/user',function(Request $request){
+//     return $request->user();
+// })->middleware('auth:sanctum');
 
 Route::apiResource('activities', ActivityController::class);
 Route::apiResource('appointment',AppointmentController::class);

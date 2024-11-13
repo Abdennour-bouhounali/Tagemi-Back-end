@@ -64,12 +64,18 @@ class AppointmentController extends Controller implements HasMiddleware
         // Validate the request data
         $validatedData = $request->validate([
             'name' => 'required|string|max:255',
+            'lastName' => 'required|string|max:255',
+            'birthday' => 'required|date',
+            'residence' => 'required|string|max:255',
+            'diseases' => 'nullable|string', // Optional field, can be null
+            'phone' => 'required|string|max:20',
+            'sex' => 'required|boolean', // Assuming sex is either 0 or 1
             'specialties' => 'required|array|min:1',
             'specialties.*.specialty_id' => 'required|exists:specialties,id',
         ]);
-    
+        
         // Get the authenticated user's ID
-        $userId = auth()->user()->id;
+        $userId = 1;
          // Find the latest patient_id and increment it
         $lastAppointment = Appointment::orderBy('patient_id', 'desc')->first();
         
@@ -167,12 +173,19 @@ class AppointmentController extends Controller implements HasMiddleware
             $appointments[] = Appointment::create([
                 'user_id' => $userId,
                 'name' => $validatedData['name'],
+                'lastName' => $validatedData['lastName'],
+                'birthday' => $validatedData['birthday'],
+                'residence' => $validatedData['residence'],
+                'diseases' => $validatedData['diseases'],
+                'phone' => $validatedData['phone'],
+                'sex' => $validatedData['sex'],
                 'patient_id' => $nextPatientId,
                 'specialty_id' => $specialtyId,
                 'specialty_order' => 1,
                 'time' => $formattedMinTime,
                 'position' => $position
             ]);
+            
 
             }else{
                 // Ensure $specialty is not null
@@ -201,6 +214,12 @@ class AppointmentController extends Controller implements HasMiddleware
                         $appointments[] = Appointment::create([
                             'user_id' => $userId,
                             'name' => $validatedData['name'],
+                            'lastName' => $validatedData['lastName'],
+                            'birthday' => $validatedData['birthday'],
+                            'residence' => $validatedData['residence'],
+                            'diseases' => $validatedData['diseases'],
+                            'phone' => $validatedData['phone'],
+                            'sex' => $validatedData['sex'],
                             'patient_id' => $nextPatientId,
                             'specialty_id' => $specialtyId,
                             'specialty_order' => 1,
@@ -225,7 +244,7 @@ class AppointmentController extends Controller implements HasMiddleware
     }
     
     public function ConfirmPresenceDelay($id){
-        $user_role = auth()->user()->role_id;
+        $user_role = Auth::user()->role_id;
     
         if ($user_role == 5 || $user_role == 1) {
             // Get all appointments for the patient
@@ -271,7 +290,7 @@ class AppointmentController extends Controller implements HasMiddleware
     }
     
     public function SpecialCase($id){
-        $user_role = auth()->user()->role_id;
+        $user_role = Auth::user()->role_id;
     
         if ($user_role == 3 || $user_role == 1) {
             // Get all appointments for the patient
@@ -308,7 +327,7 @@ class AppointmentController extends Controller implements HasMiddleware
         }
     }
     public function ConfirmPresence($id){
-    $user_role = auth()->user()->role_id;
+    $user_role =Auth::user()->role_id;
 
     if ($user_role == 5 || $user_role == 1) {
         // Get all appointments for the patient
