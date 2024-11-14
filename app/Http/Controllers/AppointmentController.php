@@ -35,7 +35,7 @@ class AppointmentController extends Controller implements HasMiddleware
     public static function middleware()
     {
         return [
-            new Middleware('auth:sanctum',except:['index','show','getPresentPatientsBySpecialty'])
+            new Middleware('auth:sanctum',except:['index','show','store','getPresentPatientsBySpecialty'])
         ];
     }
 

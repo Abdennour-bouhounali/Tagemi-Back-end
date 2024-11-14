@@ -23,7 +23,7 @@ class DoctorController extends Controller implements HasMiddleware
      */
     public function index()
     {
-        $user_role = auth()->user()->role_id;
+        $user_role = Auth::user()->role_id;
         if($user_role == 1){
             return ['doctors'=> Doctor::all()];
         }else{
@@ -36,7 +36,7 @@ class DoctorController extends Controller implements HasMiddleware
      */
     public function store(Request $request)
     {
-        $user_role = auth()->user()->role_id;
+        $user_role = Auth::user()->role_id;
 
         if($user_role == 1){
             
@@ -70,7 +70,7 @@ class DoctorController extends Controller implements HasMiddleware
      */
     public function show(Doctor $doctor)
     {
-        $user_role = auth()->user()->role_id;
+        $user_role = Auth::user()->role_id;
 
         if($user_role == 1){
             
@@ -86,7 +86,7 @@ class DoctorController extends Controller implements HasMiddleware
      */
     public function update(Request $request, Doctor $doctor)
     {
-        $user_role = auth()->user()->role_id;
+        $user_role = Auth::user()->role_id;
 
         if ($user_role == 1) {
             // Validate the request data
