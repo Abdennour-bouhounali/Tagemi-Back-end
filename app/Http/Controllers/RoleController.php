@@ -26,7 +26,7 @@ class RoleController extends Controller implements HasMiddleware
      */
     public function index()
     {
-        $user_role = auth()->user()->role_id;
+        $user_role = Auth::user()->role_id;
         if($user_role == 1){
             $admins = User::whereIn('role_id', [1, 3, 4, 5])
             ->with(['role', 'specialty'])
@@ -42,7 +42,7 @@ class RoleController extends Controller implements HasMiddleware
 
 
     public function ChangeRole(Request $request){
-        $user_role = auth()->user()->role_id;
+        $user_role = Auth::user()->role_id;
 
          // Check if the authenticated user has the required role to change another user's role
     if ($user_role == 1) {
@@ -80,7 +80,7 @@ class RoleController extends Controller implements HasMiddleware
             'speciality_id' => 'required|exists:specialties,id',
         ]);
     
-        $user_role = auth()->user()->role_id;
+        $user_role = Auth::user()->role_id;
     
         // Check if the authenticated user has the required role to assign specialties
         if ($user_role == 1) {

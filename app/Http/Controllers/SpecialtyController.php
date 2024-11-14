@@ -37,7 +37,7 @@ class SpecialtyController extends Controller implements HasMiddleware
      */
     public function store(Request $request)
     {
-        $user_role = auth()->user()->role_id;
+        $user_role = Auth::user()->role_id;
 
         if($user_role == 1){
             
@@ -81,7 +81,7 @@ class SpecialtyController extends Controller implements HasMiddleware
      */
     public function show(Specialty $specialty)
     {
-        $user_role = auth()->user()->role_id;
+        $user_role = Auth::user()->role_id;
 
         if($user_role == 1){
             
@@ -97,7 +97,7 @@ class SpecialtyController extends Controller implements HasMiddleware
      */
     public function update(Request $request, Specialty $specialty)
     {
-        $user_role = auth()->user()->role_id;
+        $user_role = Auth::user()->role_id;
 
         if ($user_role == 1) {
             // Validate the request data
@@ -122,7 +122,7 @@ class SpecialtyController extends Controller implements HasMiddleware
      */
     public function destroy(Specialty $specialty)
     {
-        $user_role = auth()->user()->role_id;
+        $user_role = Auth::user()->role_id;
     
         if ($user_role == 1) {
             try {

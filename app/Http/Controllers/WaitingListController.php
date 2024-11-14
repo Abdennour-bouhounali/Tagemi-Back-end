@@ -39,7 +39,7 @@ class WaitingListController extends Controller implements HasMiddleware
      */
     public function index()
     {
-        $user_role = auth()->user()->role_id;
+        $user_role = Auth::user()->role_id;
         if($user_role == 1 || $user_role == 4){
             // Get all users with appointments where status is 'present'
             $presents = Appointment::where('status','Present')
@@ -101,7 +101,7 @@ class WaitingListController extends Controller implements HasMiddleware
   
 
     public function Completed($id){
-        $user_role = auth()->user()->role_id;
+        $user_role = Auth::user()->role_id;
         $Appointment = Appointment::find($id);
         if(!$Appointment){
             return response()->json(['message' => 'No appointments found'], 404);
@@ -152,7 +152,7 @@ class WaitingListController extends Controller implements HasMiddleware
 
 
     public function Absent($id){
-        $user_role = auth()->user()->role_id;
+        $user_role = Auth::user()->role_id;
         $appointment = Appointment::find($id);
         if(!$appointment){
             return response()->json(['message' => 'No appointments found'], 404);
@@ -184,9 +184,9 @@ class WaitingListController extends Controller implements HasMiddleware
     }
 
     public function GetWaitingListBySpeciality(Request $request,$id){
-        $user_role = auth()->user()->role_id;
-        $user_speciality_id = auth()->user()->speciality;
-        // return ['info'=>auth()->user()];
+        $user_role = Auth::user()->role_id;
+        $user_speciality_id = Auth::user()->speciality;
+        // return ['info'=>Auth::user()];
         if ($user_role == 4||$user_role == 1) {
             // Subquery to get the minimum time and minimum id for each patient
 
