@@ -138,7 +138,21 @@ class SpecialtyController extends Controller implements HasMiddleware
             return response()->json(['message' => 'You are not authorized'], 403);
         }
     }
-    
+
+    public function alter_activation(Specialty $specialty)
+    {
+        $user_role = Auth::user()->role_id;
+
+        if ($user_role != 1) {
+            return response()->json(['message' => 'You are not authorized'], 403);
+        }
+
+        // Toggle active status
+        $specialty->is_active = !$specialty->is_active;
+        $specialty->save();
+
+        return response()->json(['message' => 'Specialty status updated', 'specialty' => $specialty]);
+    }
 
 
 

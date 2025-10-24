@@ -28,7 +28,7 @@ class RoleController extends Controller implements HasMiddleware
     {
         $user_role = Auth::user()->role_id;
         if($user_role == 1){
-            $admins = User::whereIn('role_id', [1, 3, 4, 5])
+            $admins = User::whereIn('role_id', [1, 3, 4, 5,6])
             ->with(['role', 'specialty'])
             ->get();
             $SpecialtiesAdmins = User::where('role_id',4)->get();
@@ -59,7 +59,7 @@ class RoleController extends Controller implements HasMiddleware
         // Update the user's role
         $user->role_id = $validatedData['role'];
         $user->save();
-        $admins = User::whereIn('role_id', [1, 3, 4, 5])
+        $admins = User::whereIn('role_id', [1, 3, 4, 5,6])
             ->with(['role', 'specialty'])
             ->get();
         // Return a success response

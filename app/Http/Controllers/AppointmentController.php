@@ -7,14 +7,16 @@ use DateInterval;
 use Carbon\Carbon;
 use App\Models\Specialty;
 use App\Models\Appointment;
+use App\Models\Event;
 use App\Models\WaitingList;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Routing\Controllers\Middleware;
 use Illuminate\Routing\Controllers\HasMiddleware;
-
+use Illuminate\Support\Facades\DB;
 use App\Exports\AppointmentsExport;
 use Maatwebsite\Excel\Facades\Excel;
+use Illuminate\Support\Facades\Log;
 
 
 class AppointmentController extends Controller implements HasMiddleware
@@ -45,16 +47,31 @@ class AppointmentController extends Controller implements HasMiddleware
     /**
      * Display a listing of the resource.
      */
-    public function index()
-    {
-        $time = $this->getTime();
-        
-        $appointments = Appointment::with('specialty')
+public function index()
+{
+    $time = $this->getTime();
+    $event = Event::where('is_current', 1)->first();
+
+    // ✅ If no active event
+    if (!$event) {
+        return response()->json([
+            'message' => 'لا يوجد حدث نشط حالياً.'
+        ], 404);
+    }
+
+    $event_id = $event->id;
+
+    $appointments = Appointment::with('specialty')
+        ->where('event_id', $event_id)
         ->get()
         ->groupBy('patient_id');
-        return response()->json(['appoitments' => $appointments], 201);
 
-    }
+    return response()->json([
+        'message' => 'تم جلب المواعيد بنجاح.',
+        'appointments' => $appointments
+    ], 200);
+}
+
 
     /**
      * Store a newly created resource in storage.
@@ -65,7 +82,7 @@ class AppointmentController extends Controller implements HasMiddleware
         $validatedData = $request->validate([
             'name' => 'required|string|max:255',
             'lastName' => 'required|string|max:255',
-            'birthday' => 'required|date',
+            'birthday' => 'required|date', // Ensures the input is in dd/mm/yyyy format
             'residence' => 'required|string|max:255',
             'diseases' => 'nullable|string', // Optional field, can be null
             'phone' => 'required|string|max:20',
@@ -73,175 +90,215 @@ class AppointmentController extends Controller implements HasMiddleware
             'specialties' => 'required|array|min:1',
             'specialties.*.specialty_id' => 'required|exists:specialties,id',
         ]);
-        
+        $event = Event::where('is_current', 1)->first();
+
+        if($event){
+        $event_id = $event->id;
+
+        }else{
+        $event_id = 0;
+
+        }
+    
         // Get the authenticated user's ID
         $userId = 1;
-         // Find the latest patient_id and increment it
+    
+        // Handle diseases field default
+        $validatedData['diseases'] = $validatedData['diseases'] ?? 'nothing';
+    
+        // Convert birthday format if needed
+        $formattedBirthday = $validatedData['birthday'];
+    
+        // Check if an appointment with the same data already exists
+        $existingAppointment = Appointment::where('name', $validatedData['name'])
+                            ->where('lastName', $validatedData['lastName'])
+                            ->where('birthday', $formattedBirthday)
+                            ->where('residence', $validatedData['residence'])
+                            ->where('phone', $validatedData['phone'])
+                            ->where('sex', $validatedData['sex'])
+                            ->first();
+    
+        if ($existingAppointment) {
+            return response()->json(['message' => 'An appointment with the same data already exists.'], 409);
+        }
+    
+        // Generate the next patient ID
         $lastAppointment = Appointment::orderBy('patient_id', 'desc')->first();
-        
         $nextPatientId = $lastAppointment ? $lastAppointment->patient_id + 1 : 1;
-
-
     
         // Starting time for appointments
-        $startingTime = '08:00:00';
-        $Maxtime = '23:59:59';
-        // Create appointments for each specialty
-        $appointments = [];
-        $minTime = new DateTime($Maxtime);
-        $specialtyStatusDict = [];
-        $waitinglist_message = '';
+        $startingTime = '08:30:00';
+        $maxTime = '23:59:59';
+    
+        $minTime = new DateTime($maxTime);
+        $maxAppointmentTime = null; // Will be updated dynamically
         $message = '';
-
+        $waitinglist_message = '';
+    
+        $speciality_order_id = 0;
+        $open = false;
+    
+        // Loop through specialties
         foreach ($validatedData['specialties'] as $specialty) {
             $specialtyId = $specialty['specialty_id'];
             $Speciality_chosed = Specialty::find($specialtyId);
-
-            $specialtyStatusDict[$specialtyId] = $Speciality_chosed['Flag'];
-            
-
-            if($Speciality_chosed['Flag'] == 'Open'){
-
-
-
-            }elseif($Speciality_chosed['Flag'] == 'WaitingList'){
-
-                if($waitinglist_message !== '' ){
-
-                    $waitinglist_message = $waitinglist_message . ' and ' . $Speciality_chosed['name'];
-                }else{
-                    $waitinglist_message = $Speciality_chosed['name'];
-                }
-
-            }
-
-        }
-
-
-        
-
-        $open = false;
-        foreach ($validatedData['specialties'] as $specialty) {
-            $specialtyId = $specialty['specialty_id'];
-
-                if($Speciality_chosed['Flag'] == 'Open'){
-
-                
-                // Retrieve the duration for the specialty in minutes
-                $specialtyDuration = Specialty::find($specialtyId)->duration; // Assuming the duration is stored in minutes
-
-                // Calculate the total number of minutes to add to the starting time
-                $appointmentCount = Appointment::where('specialty_id', $specialtyId)->count();
+    
+            if ($Speciality_chosed && $Speciality_chosed['Flag'] === 'Open') {
+                $specialtyDuration = $Speciality_chosed->duration; // Duration in minutes
+                $appointmentCount = Appointment::where('specialty_id', $specialtyId)
+                                                ->where('specialty_order', 1)
+                                                ->count();
+    
                 $totalMinutesToAdd = $appointmentCount * $specialtyDuration;
-        
-                // Calculate the new time
+                if ($totalMinutesToAdd > 240) {
+                    $totalMinutesToAdd += 80;
+                }
+    
                 $time = new DateTime($startingTime);
                 $time->add(new DateInterval('PT' . $totalMinutesToAdd . 'M'));
-                $specialty = Specialty::find($specialtyId);
-                if ($specialty) {
-                    $specialty->specialty_time = $time->format('H:i:s'); // Assuming `specialty_time` is a column in your specialties table
-                    $specialty->save();
-                }
-                
+    
                 if ($time < $minTime) {
                     $minTime = $time;
+                    $speciality_order_id = $specialtyId;
+    
+                    // Calculate maxTime as one hour after minTime
+                    $maxAppointmentTime = clone $minTime;
+                    $maxAppointmentTime->add(new DateInterval('PT1H'));
                 }
+    
                 $open = true;
             }
         }
-
-        if($open){
-            $message = 'نرجوا المجيء على الساعة ' . $minTime->format('H:i');
+    
+        // Generate the message with minTime and maxTime
+        if ($open && $maxAppointmentTime) {
+            $message = "موعدكم ما بين الساعة " . $minTime->format('H:i') . " إلى الساعة " . $maxAppointmentTime->format('H:i');
         }
 
     
         // Format the minimum time
         $formattedMinTime = $minTime->format('H:i:s');
-
-        // Create appointments with the minimum time
+    
+        // Create appointments
+        $appointments = [];
         foreach ($validatedData['specialties'] as $specialty) {
             $specialtyId = $specialty['specialty_id'];
             $Speciality_chosed = Specialty::find($specialtyId);
-
-            // Get the current highest position for the given specialty
-            $maxPosition = Appointment::where('specialty_id', $specialtyId)->max('position');
-
-            if($maxPosition < $Speciality_chosed['Max_Number']){
-            // Assign the next position
-            $position = $maxPosition ? $maxPosition + 1 : 1;
     
-            $appointments[] = Appointment::create([
-                'user_id' => $userId,
-                'name' => $validatedData['name'],
-                'lastName' => $validatedData['lastName'],
-                'birthday' => $validatedData['birthday'],
-                'residence' => $validatedData['residence'],
-                'diseases' => $validatedData['diseases'],
-                'phone' => $validatedData['phone'],
-                'sex' => $validatedData['sex'],
-                'patient_id' => $nextPatientId,
-                'specialty_id' => $specialtyId,
-                'specialty_order' => 1,
-                'time' => $formattedMinTime,
-                'position' => $position
-            ]);
-            
-
-            }else{
-                // Ensure $specialty is not null
-                if ($Speciality_chosed) {
-                    // Count the number of appointments with status 'Waiting List'
-                    $waitingListNumber = Appointment::where('status', 'Waiting List')
-                                                    ->where('specialty_id', $specialtyId)
-                                                    ->count();
-
-                    // Get the capacity for the specialty
-                    $specialtyAdditionCapacity = $Speciality_chosed->Addition_Capacitif;
-
-                    // Check if the waiting list exceeds the specialty's capacity
-                    if ($waitingListNumber >= $specialtyAdditionCapacity) {
-                        // Mark the specialty as closed
-                        $Speciality_chosed->Flag = 'Closed';
-
-                    } else {
-                        // Mark the specialty as in the waiting list
-                        $Speciality_chosed->Flag = 'WaitingList';
-
-                        // Determine the next position in the list
-                        $position = $maxPosition ? $maxPosition + 1 : 1;
-
-                        // Create a new appointment
-                        $appointments[] = Appointment::create([
-                            'user_id' => $userId,
-                            'name' => $validatedData['name'],
-                            'lastName' => $validatedData['lastName'],
-                            'birthday' => $validatedData['birthday'],
-                            'residence' => $validatedData['residence'],
-                            'diseases' => $validatedData['diseases'],
-                            'phone' => $validatedData['phone'],
-                            'sex' => $validatedData['sex'],
-                            'patient_id' => $nextPatientId,
-                            'specialty_id' => $specialtyId,
-                            'specialty_order' => 1,
-                            'time' => $formattedMinTime,
-                            'position' => $position,
-                            'status' => 'Waiting List'
-                        ]);
-                    }
-
-                    // Save the updated specialty
-                    $Speciality_chosed->save();
-                }
-
-
-                
-
+            $maxPosition = Appointment::where('specialty_id', $specialtyId)->max('position');
+    
+            if ($maxPosition < $Speciality_chosed['Max_Number']) {
+                $position = $maxPosition ? $maxPosition + 1 : 1;
+    
+                $appointments[] = Appointment::create([
+                    'user_id' => $userId,
+                    'name' => $validatedData['name'],
+                    'lastName' => $validatedData['lastName'],
+                    'birthday' => $formattedBirthday,
+                    'residence' => $validatedData['residence'],
+                    'diseases' => $validatedData['diseases'],
+                    'phone' => $validatedData['phone'],
+                    'sex' => $validatedData['sex'],
+                    'patient_id' => $nextPatientId,
+                    'specialty_id' => $specialtyId,
+                    'event_id' => $event_id,
+                    'specialty_order' => $speciality_order_id === $specialtyId ? 1 : 0,
+                    'time' => $formattedMinTime,
+                    'position' => $position
+                ]);
             }
         }
     
-        // Return a response
-        return response()->json(['message' => $message, 'appointments' => $appointments, 'minTime' => $formattedMinTime,'waitinglist_message'=>$waitinglist_message], 201);
+        // Return response with message
+        return response()->json([
+            'message' => $message,
+            'appointments' => $appointments,
+            'minTime' => $formattedMinTime,
+            'waitinglist_message' => $waitinglist_message,
+        ], 201);
     }
+
+
+
+     public function addMultiple(Request $request)
+    {
+         // Log the full request
+        Log::info('Received AddMultipleAppointments request:', $request->all());
+
+        // Optional: log only appointments array
+        Log::info('Appointments data:', $request->input('appointments', []));
+
+        // Optional: log the selected specialty
+        Log::info('Selected specialty_id:', ['specialty_id' => $request->input('specialty_id')]);
+
+        $validatedData = $request->validate([
+            'event_id' => 'required|exists:events,id',
+            'appointments' => 'required|array|min:1',
+            'appointments.*.name' => 'required|string|max:255',
+            'appointments.*.lastName' => 'required|string|max:255',
+            'appointments.*.birthday' => 'required|date',
+            'appointments.*.residence' => 'required|string|max:255',
+            'appointments.*.diseases' => 'nullable|string',
+            'appointments.*.phone' => 'required|string|max:20',
+            'appointments.*.sex' => 'required|boolean',
+            'specialty_id' => 'required|exists:specialties,id',
+        ]);
+
+        $event_id = $validatedData['event_id'];
+        $specialty_id = $request->input('specialty_id');
+
+        $specialty = Specialty::find($specialty_id);
+        if (!$specialty || $specialty->Flag !== 'Open') {
+            return response()->json(['message' => 'التخصص مغلق أو غير موجود.'], 400);
+        }
+
+        // Determine the starting time for appointments
+        $startingTime = '08:30:00';
+        $appointmentsCreated = [];
+
+        // Get last patient ID
+        $lastPatient = Appointment::orderBy('patient_id', 'desc')->first();
+        $nextPatientId = $lastPatient ? $lastPatient->patient_id + 1 : 1;
+
+        // Loop through each appointment in the request
+        foreach ($validatedData['appointments'] as $appData) {
+
+            // Calculate the position in specialty queue
+            $maxPosition = Appointment::where('specialty_id', $specialty_id)->max('position');
+            $position = $maxPosition ? $maxPosition + 1 : 1;
+
+            // Calculate appointment time
+            $appointmentTime = new DateTime($startingTime);
+            $appointmentTime->add(new DateInterval('PT' . ($position - 1) * $specialty->duration . 'M'));
+
+            // Create appointment
+            $appointment = Appointment::create([
+                'user_id' => 1,
+                'event_id' => $event_id,
+                'name' => $appData['name'],
+                'lastName' => $appData['lastName'],
+                'birthday' => $appData['birthday'],
+                'residence' => $appData['residence'],
+                'diseases' => $appData['diseases'] ?? 'nothing',
+                'phone' => $appData['phone'],
+                'sex' => $appData['sex'],
+                'patient_id' => $nextPatientId,
+                'specialty_id' => $specialty_id,
+                'specialty_order' => 1,
+                'time' => $appointmentTime->format('H:i:s'),
+                'position' => $position,
+            ]);
+
+            $appointmentsCreated[] = $appointment;
+            $nextPatientId++;
+        }
+
+        return response()->json([
+            'message' => 'تم إضافة جميع المواعيد بنجاح.',
+            'appointments' => $appointmentsCreated,
+        ], 201);
+    }
+
     
     public function ConfirmPresenceDelay($id){
         $user_role = Auth::user()->role_id;
@@ -264,7 +321,7 @@ class AppointmentController extends Controller implements HasMiddleware
                 $specialtyId = $appointment->specialty_id;
     
                 // Get the current highest position for the given specialty
-                $maxPosition = Appointment::where('specialty_id', $specialtyId)->max('position');
+                $maxPosition = Appointment::where('specialty_id', $specialtyId)->where('status','Present')->max('position');
         
                 // Assign the next position
                 $position = $maxPosition ? $maxPosition + 1 : 1;
@@ -315,7 +372,7 @@ class AppointmentController extends Controller implements HasMiddleware
                 }
 
             $appointment->position = 0;
-            $appointment->name = $appointment->name . ' ( Special Case )';
+            $appointment->name = $appointment->name . '(حالة خاصة)';
             $appointment->save();
             $i = $i + 1;
     
@@ -326,6 +383,8 @@ class AppointmentController extends Controller implements HasMiddleware
             return response()->json(['message' => 'You are not authorized'], 403);
         }
     }
+
+
     public function ConfirmPresence($id){
     $user_role =Auth::user()->role_id;
 
@@ -344,10 +403,22 @@ class AppointmentController extends Controller implements HasMiddleware
             if($appointment->status != 'Pending'){
                 return ['message' => 'The Patient is Already Here'];
             }
+            $specialtyId = $appointment->specialty_id;
+            // $specialtyId = $specialty['specialty_id'];
+            // $Speciality_chosed = Specialty::find($specialtyId);
+
+            // Get the current highest position for the given specialty
+            $MaxorderList = Appointment::where('specialty_id', $specialtyId)->max('orderList');
+
+            // Assign the next position
+            $orderList =  $MaxorderList + 1 ;
+
+            $appointment->orderList = $orderList;
 
             if($i == 0){
 
                 $appointment->status = 'Present';
+
                 
             }else{
                 $appointment->status = 'Waiting';
@@ -364,6 +435,22 @@ class AppointmentController extends Controller implements HasMiddleware
     }
 }
 
+    public function addComment(Request $request)
+    {
+        $validated = $request->validate([
+            'appointment_id' => 'required|exists:appointments,id',
+            'comment' => 'required|string|max:255',
+        ]);
+
+        $appointment = Appointment::find($validated['appointment_id']);
+        $appointment->comment = $validated['comment'];
+        $appointment->save();
+
+        return response()->json([
+            'message' => 'Comment added successfully',
+            'appointment' => $appointment,
+        ],200);
+    }
 
 
     /**
@@ -390,4 +477,24 @@ class AppointmentController extends Controller implements HasMiddleware
         $appointment->delete();
     return response()->json(['message' => 'Appointment Deleted successfully'], 201);
     }
+
+    public function deleteDuplicates()
+    {
+        // Identify duplicate appointments with the same patient_id and specialty_id
+        $duplicates = DB::table('appointments')
+            ->select('id')
+            ->whereIn('id', function ($query) {
+                $query->selectRaw('MIN(id)')
+                    ->from('appointments')
+                    ->groupBy('patient_id', 'specialty_id') // Group by both patient_id and specialty_id
+                    ->havingRaw('COUNT(*) > 1');
+            })
+            ->pluck('id');
+    
+        // Delete duplicate appointments
+        DB::table('appointments')->whereIn('id', $duplicates)->delete();
+    
+        return response()->json(['message' => 'Duplicate appointments with the same patient_id and specialty_id deleted successfully.']);
+    }
+    
 }

@@ -10,6 +10,7 @@ use App\Http\Controllers\UsefulController;
 use App\Http\Controllers\SpecialtyController;
 use App\Http\Controllers\AppointmentController;
 use App\Http\Controllers\WaitingListController;
+use App\Http\Controllers\EventController;
 
 
 use App\Http\Controllers\Content\BlogController;
@@ -21,6 +22,7 @@ use App\Http\Controllers\Content\FutureProjectController;
 use App\Http\Controllers\Content\StaticContentController;
 use App\Http\Controllers\ContactController;
 use App\Http\Controllers\VolunteerController;
+
 
 Route::get('/volunteers', [VolunteerController::class, 'index']);
 Route::post('/volunteers', [VolunteerController::class, 'store']);
@@ -35,22 +37,34 @@ Route::get('/contacts', [ContactController::class, 'index']);
 Route::delete('/contacts/{id}', [ContactController::class, 'destroy']);
 
 
-// Route::get('/user',function(Request $request){
-//     return $request->user();
-// })->middleware('auth:sanctum');
+Route::get('/user',function(Request $request){
+    return $request->user();
+})->middleware('auth:sanctum');
 
 Route::apiResource('activities', ActivityController::class);
 Route::apiResource('appointment',AppointmentController::class);
 Route::post('appointment/ConfirmPresence/{id}',[AppointmentController::class,'ConfirmPresence']);
 Route::post('appointment/ConfirmPresenceDelay/{id}',[AppointmentController::class,'ConfirmPresenceDelay']);
+Route::post('appointment/addComment',[AppointmentController::class,'addComment']);
+Route::middleware('auth:sanctum')->group(function () {
+    Route::post('/appointments/add-multiple', [AppointmentController::class, 'addMultiple']);
+});
+
+// /api/addComment
 Route::post('appointment/SpecialCase/{id}',[AppointmentController::class,'SpecialCase']);
 Route::get('waitinglist/getwaitinglist',[WaitingListController::class,'getwaitinglist']);
+
+Route::middleware('auth:sanctum')->get('/getEvents', [EventController::class, 'index']);
+
 
 Route::apiResource('rules', RuleController::class);
 Route::apiResource('projects', FutureProjectController::class);
 Route::post('projects/storeProjectImages',[FutureProjectController::class,'storeProjectImages']);
 Route::post('projects/edit/{id}',[ FutureProjectController::class,'editProject']);
 Route::delete('projects/delete/{id}',[FutureProjectController::class,'delete']);
+
+Route::post('/appointment/delete-duplicates', [AppointmentController::class, 'deleteDuplicates']);
+
 
 Route::get('activities/showByActivitiesType/{id}',[ActivityController::class,'showByActivitiesType']);
 Route::post('activities/makeSpecial/{id}',[ActivityController::class,'makeSpecial']);
@@ -65,6 +79,7 @@ Route::apiResource('sponsors', SponsorController::class);
 Route::apiResource('blogs', BlogController::class);
 Route::apiResource('static-contents', StaticContentController::class);
 Route::apiResource('specialty',SpecialtyController::class);
+Route::patch('/specialty/{specialty}/activate', [SpecialtyController::class, 'alter_activation']);
 
 Route::apiResource('role',RoleController::class);
 Route::post('role/AssignSpeciality',[RoleController::class,'AssignSpeciality']);
@@ -85,7 +100,11 @@ Route::apiResource('doctor',DoctorController::class);
 Route::apiResource('waitinglist',WaitingListController::class);
 Route::post('waitinglist/Complete/{id}',[WaitingListController::class,'Completed']);
 Route::post('waitinglist/Absent/{id}',[WaitingListController::class,'Absent']);
+Route::post('waitinglist/Dilatation/{id}',[WaitingListController::class,'Dilatation']);
+Route::post('waitinglist/Commingsoon/{id}',[WaitingListController::class,'Commingsoon']);
+Route::post('waitinglist/FinishedDilatation/{id}',[WaitingListController::class,'FinishedDilatation']);
 Route::post('waitinglist/deleteAppointmentsAndAdmins',[WaitingListController::class,'deleteAppointmentsAndAdmins']);
+Route::post('waitinglist/alterSpeciality/{id}',[WaitingListController::class,'alterSpeciality']);
 
 Route::get('waitinglist/GetWaitingListBySpeciality/{id}',[WaitingListController::class,'GetWaitingListBySpeciality']);
 
@@ -97,3 +116,12 @@ Route::post('/logout',[AuthController::class,'logout'])->middleware('auth:sanctu
 
 
 
+
+Route::middleware('auth:sanctum')->group(function () {
+    Route::get('/events', [EventController::class, 'index']);
+    Route::get('/currentEvent', [EventController::class, 'currentEvent']);
+    Route::post('/events', [EventController::class, 'store']);
+    Route::patch('/events/{event}/toggle', [EventController::class, 'toggle']);
+    Route::post('/events/{event}/archive', [EventController::class, 'archiveAppointments']);
+
+});
