@@ -9,19 +9,22 @@ class Appointment extends Model
 {
     use HasFactory;
     protected $fillable = [
-        'user_id',
+       'user_id',
+       'event_id',
         'name',
-        'last_name',       // New field
+        'lastName',       // New field
         'patient_id',
         'specialty_id',
         'specialty_order',
         'time',
         'status',
         'position',
+        'orderList',
         'birthday',        // New field
         'residence',       // New field
         'diseases',        // New field
         'phone',           // New field
+        'comment',
         'sex'              // New field
     ];
     
@@ -33,6 +36,11 @@ class Appointment extends Model
     public function specialty()
     {
         return $this->belongsTo(Specialty::class);
+    }
+
+    public function event()
+    {
+        return $this->belongsTo(Event::class);
     }
 
     // public function waitingLists()
