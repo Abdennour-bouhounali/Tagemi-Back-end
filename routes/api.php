@@ -116,10 +116,10 @@ Route::post('/logout',[AuthController::class,'logout'])->middleware('auth:sanctu
 
 
 
+Route::get('/currentEvent', [EventController::class, 'currentEvent']);
 
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('/events', [EventController::class, 'index']);
-    Route::get('/currentEvent', [EventController::class, 'currentEvent']);
     Route::post('/events', [EventController::class, 'store']);
     Route::patch('/events/{event}/toggle', [EventController::class, 'toggle']);
     Route::post('/events/{event}/archive', [EventController::class, 'archiveAppointments']);
