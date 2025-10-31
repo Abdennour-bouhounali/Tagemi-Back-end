@@ -2,158 +2,150 @@
 
 namespace App\Http\Controllers;
 
-use Carbon\Carbon;
-use App\Models\User;
 use App\Models\Specialty;
+use App\Models\User;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
-use Illuminate\Routing\Controllers\Middleware;
-use Illuminate\Routing\Controllers\HasMiddleware;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
-class SpecialtyController extends Controller implements HasMiddleware
+class SpecialtyController extends Controller
 {
-    public static function middleware()
-    {
-        return [
-            new Middleware('auth:sanctum',except:['index'])
-        ];
-    }
-
     /**
-     * Display a listing of the resource.
+     * Get all specialties with their CheckAdmin
      */
     public function index()
+
     {
+        $specialties = Specialty::all();
 
-            
-            $specialties = Specialty::with('users')->get();
-            return response()->json(['specialties' => $specialties]);
-
-        // return Specialty::all();
+        return response()->json([
+            'specialties' => $specialties
+        ], 200);
     }
 
     /**
-     * Store a newly created resource in storage.
+     * Store a new specialty WITHOUT auto-creating CheckAdmin
+     * CheckAdmin will be created when event is created
      */
-    public function store(Request $request)
-    {
-        $user_role = Auth::user()->role_id;
+public function store(Request $request)
+{
+    $validator = Validator::make($request->all(), [
+        'name' => 'required|string|max:255|unique:specialties,name',
+    ], [
+        'name.required' => 'اسم التخصص مطلوب',
+        'name.unique' => 'هذا التخصص موجود بالفعل',
+    ]);
 
-        if($user_role == 1){
-            
-          // Validate the request data
-          $validatedData = $request->validate([
-            'name' => 'required|string|max:255',
-            'duration' => 'required|integer',
-            'Total_Duration'=> ['required', 'date_format:H:i:s'],
-            'Addition_Capacitif'=> 'required|integer'
-        ], [
-            'Total_Duration.date_format' => 'The Total Duration must be in the format HH:MM:SS.'
+    if ($validator->fails()) {
+        return response()->json([
+            'message' => 'فشل التحقق من البيانات',
+            'errors' => $validator->errors()
+        ], 422);
+    }
+
+    try {
+        // THIS WAS MISSING - Create the specialty
+        $specialty = Specialty::create([
+            'name' => $request->name
         ]);
 
-        $Total_Duration = Carbon::createFromFormat('H:i:s', $validatedData['Total_Duration']);
+        return response()->json([
+            'message' => 'تم إضافة التخصص بنجاح',
+            'specialty' => $specialty
+        ], 201);
 
-        $Total_Duration_in_minutes = $Total_Duration->hour * 60 + $Total_Duration->minute + $Total_Duration->second / 60;
-
-        // Perform the division
-
-        $result = ceil($Total_Duration_in_minutes / $validatedData['duration']);
-
-
-        // Store the appointment data
-        $speciality = Specialty::create([
-            'name' => $validatedData['name'],
-            'duration' =>$validatedData['duration'],
-            'Max_Number'=>$result,
-            'Addition_Capacitif'=>$validatedData['Addition_Capacitif']
+    } catch (\Exception $e) {
+        Log::error('Specialty creation failed', [
+            'error' => $e->getMessage(),
+            'trace' => $e->getTraceAsString(),
         ]);
 
-        // Return a response
-        return response()->json(['message' => 'Speciality created successfully', 'speciality' => $speciality,'Total_Duration'=>$Total_Duration], 201);
-
-        }else{
-            return ['message' => 'You are not autorized'];
-        }
+        return response()->json([
+            'message' => 'حدث خطأ أثناء إضافة التخصص',
+            'error' => config('app.debug') ? $e->getMessage() : 'خطأ داخلي في الخادم'
+        ], 500);
     }
+}
 
     /**
-     * Display the specified resource.
+     * Update specialty
      */
-    public function show(Specialty $specialty)
+    public function update(Request $request, $id)
     {
-        $user_role = Auth::user()->role_id;
-
-        if($user_role == 1){
-            
-            return $specialty;
-
-        }else{
-            return ['message' => 'You are not autorized'];
+        $specialty = Specialty::find($id);
+        
+        if (!$specialty) {
+            return response()->json(['message' => 'التخصص غير موجود'], 404);
         }
-    }
 
-    /**
-     * Update the specified resource in storage.
-     */
-    public function update(Request $request, Specialty $specialty)
-    {
-        $user_role = Auth::user()->role_id;
+        $validator = Validator::make($request->all(), [
+            'name' => 'required|string|max:255|unique:specialties,name,' . $id,
+        ]);
 
-        if ($user_role == 1) {
-            // Validate the request data
-            $validatedData = $request->validate([
-                'name' => 'required|string|max:255',
-                'duration' => 'required|integer',
-                'Total_Duration'=> ['required', 'date_format:H:i:s']
+        if ($validator->fails()) {
+            return response()->json([
+                'message' => 'فشل التحقق من البيانات',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        try {
+            $specialty->update(['name' => $request->name]);
+
+            return response()->json([
+                'message' => 'تم تحديث التخصص بنجاح',
+                'specialty' => $specialty
+            ], 200);
+
+        } catch (\Exception $e) {
+            Log::error('Specialty update failed', [
+                'specialty_id' => $id,
+                'error' => $e->getMessage()
             ]);
 
-            // Update the specialty data
-            $specialty->update($validatedData);
-
-            // Return a response
-            return response()->json(['message' => 'Specialty updated successfully', 'specialty' => $specialty], 200);
-        } else {
-            return response()->json(['message' => 'You are not authorized'], 403);
+            return response()->json([
+                'message' => 'حدث خطأ أثناء تحديث التخصص',
+                'error' => config('app.debug') ? $e->getMessage() : 'خطأ داخلي في الخادم'
+            ], 500);
         }
     }
 
     /**
-     * Remove the specified resource from storage.
+     * Delete specialty
      */
-    public function destroy(Specialty $specialty)
+    public function destroy($id)
     {
-        $user_role = Auth::user()->role_id;
-    
-        if ($user_role == 1) {
-            try {
-            // Set specialty_id to 0 for users associated with this specialty
-            User::where('specialty_id', $specialty->id)->update(['specialty_id' => 6]);
+        $specialty = Specialty::find($id);
+        
+        if (!$specialty) {
+            return response()->json(['message' => 'التخصص غير موجود'], 404);
+        }
 
-                $specialty->delete();
-                return response()->json(['message' => 'Specialty deleted successfully'], 200);
-            } catch (\Exception $e) {
-                return response()->json(['message' => 'Error deleting specialty: ' . $e->getMessage()], 500);
-            }
-        } else {
-            return response()->json(['message' => 'You are not authorized'], 403);
+        DB::beginTransaction();
+        try {
+            $specialty->delete();
+            DB::commit();
+
+            return response()->json([
+                'message' => 'تم حذف التخصص بنجاح'
+            ], 200);
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            
+            Log::error('Specialty deletion failed', [
+                'specialty_id' => $id,
+                'error' => $e->getMessage()
+            ]);
+
+            return response()->json([
+                'message' => 'حدث خطأ أثناء حذف التخصص',
+                'error' => config('app.debug') ? $e->getMessage() : 'خطأ داخلي في الخادم'
+            ], 500);
         }
     }
 
-    public function alter_activation(Specialty $specialty)
-    {
-        $user_role = Auth::user()->role_id;
-
-        if ($user_role != 1) {
-            return response()->json(['message' => 'You are not authorized'], 403);
-        }
-
-        // Toggle active status
-        $specialty->is_active = !$specialty->is_active;
-        $specialty->save();
-
-        return response()->json(['message' => 'Specialty status updated', 'specialty' => $specialty]);
-    }
-
-
-
+   
 }

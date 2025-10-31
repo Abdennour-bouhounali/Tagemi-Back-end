@@ -20,7 +20,8 @@ class ContactController extends Controller
             'last_name' => 'required|string|max:255',
             'phone' => 'required|string|max:20',
             'message' => 'required|string',
-            'wilaya' => 'required|string|max:255',
+            'state' => 'required|string|max:255',
+            'commun' => 'required|string|max:255',
             'type_message' => 'required|string|max:255',
         ]);
 
