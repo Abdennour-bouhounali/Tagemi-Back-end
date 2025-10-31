@@ -51,38 +51,34 @@ class ArchivedEventStatisticsController extends Controller
  */
 public function statusStats($eventId)
 {
-    $event = Event::findOrFail($eventId);
+       $appointments = AppointmentArchive::where('event_id', $eventId)->get();
     
-    if (!$event->is_archived) {
-        return response()->json([
-            'success' => false,
-            'message' => 'This event is not archived'
-        ], 400);
-    }
-
-    $totalCount = AppointmentArchive::where('event_id', $eventId)->count();
-
-    // Fix: Use subquery or calculate percentage separately
-    $stats = AppointmentArchive::where('event_id', $eventId)
-        ->select(
-            'status',
-            DB::raw('COUNT(*) as count')
-        )
-        ->groupBy('status')
-        ->get()
-        ->map(function($stat) use ($totalCount) {
-            // Calculate percentage after fetching data
-            $stat->percentage = $totalCount > 0 
-                ? round(($stat->count / $totalCount) * 100, 2) 
-                : 0;
-            return $stat;
-        });
+    $statusBreakdown = $appointments
+        ->map(function ($appointment) {
+            // Normalize status to 3 categories
+            if ($appointment->status === 'Completed') {
+                $appointment->normalized_status = 'Completed';
+            } elseif ($appointment->status === 'Pending') {
+                $appointment->normalized_status = 'Pending';
+            } else {
+                $appointment->normalized_status = 'Waiting';
+            }
+            return $appointment;
+        })
+        ->groupBy('normalized_status')
+        ->map(function ($group, $status) {
+            return [
+                'status' => $status,
+                'count' => $group->count(),
+                'special_count' => $group->where('is_special', 1)->count(),
+            ];
+        })
+        ->values();
 
     return response()->json([
-        'success' => true,
-        'event' => $event,
-        'total_appointments' => $totalCount,
-        'statistics' => $stats
+        'event' => Event::find($eventId),
+        'statistics' => $statusBreakdown,
+        'total_appointments' => $appointments->count(),
     ]);
 }
 
@@ -249,9 +245,21 @@ public function statusStats($eventId)
             
             // Status breakdown
             'status_breakdown' => AppointmentArchive::where('event_id', $eventId)
-                ->select('status', DB::raw('COUNT(*) as count'))
-                ->groupBy('status')
-                ->get(),
+                    ->select(
+                        DB::raw("CASE 
+                            WHEN status = 'Completed' THEN 'Completed'
+                            WHEN status = 'Pending' THEN 'Pending'
+                            ELSE 'Waiting'
+                        END as status"),
+                        DB::raw('COUNT(*) as count'),
+                        DB::raw('SUM(CASE WHEN is_special = 1 THEN 1 ELSE 0 END) as special_count')
+                    )
+                    ->groupBy(DB::raw("CASE 
+                        WHEN status = 'Completed' THEN 'Completed'
+                        WHEN status = 'Pending' THEN 'Pending'
+                        ELSE 'Waiting'
+                    END"))
+                    ->get(),
             
             // Specialty breakdown
             'specialty_breakdown' => AppointmentArchive::where('appointments_archive.event_id', $eventId) // FIX: Specify table name
@@ -297,4 +305,5 @@ public function statusStats($eventId)
             'report' => $report
         ]);
     }
+
 }
