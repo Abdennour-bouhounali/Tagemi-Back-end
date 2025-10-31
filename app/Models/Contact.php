@@ -13,7 +13,8 @@ class Contact extends Model
         'last_name',
         'phone',
         'message',
-        'wilaya',
+        'state',
+        'commun',
         'type_message'
     ];
 }

@@ -7,25 +7,13 @@ use Illuminate\Database\Eloquent\Model;
 
 class Specialty extends Model
 {
-    use HasFactory;
-    protected $fillable = ['name','specialty_time','duration','Max_Number','Addition_Capacitif','Flag'];
+    protected $fillable = [
+        'name',
+    ];
 
-    public function doctors()
+    // Other relationships
+    public function eventSpecialties()
     {
-        return $this->hasMany(Doctor::class);
-    }
-
-    public function appointments()
-    {
-        return $this->hasMany(Appointment::class);
-    }
-
-    public function waitingLists()
-    {
-        return $this->hasMany(WaitingList::class);
-    }
-    public function users()
-    {
-        return $this->hasMany(User::class);
+        return $this->hasMany(EventSpecialty::class);
     }
 }

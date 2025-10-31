@@ -8,7 +8,7 @@ use Illuminate\Http\Request;
 use App\Exports\AppointmentsExport;
 use App\Models\Parameter;
 use Maatwebsite\Excel\Facades\Excel;
-
+use App\Models\User;
 
 class UsefulController extends Controller
 {
@@ -104,9 +104,6 @@ class UsefulController extends Controller
         return Parameter::find(1)->is_day_visits;
     }
 
-    public function getdisplayAuth(){
-        return Parameter::find(1)->is_aut_displayed;
-    }
 
     
 }

@@ -2,7 +2,6 @@
 
 namespace App\Models;
 
-// use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
@@ -12,30 +11,20 @@ class User extends Authenticatable
 {
     use HasFactory, Notifiable, HasApiTokens;
 
-    /**
-     * The attributes that are mass assignable.
-     *
-     * @var array<int, string>
-     */
     protected $fillable = [
-        'role_id', 'name', 'email', 'password', 'phone','specialty_id'
+        'role_id',
+        'event_id',
+        'name',
+        'email',
+        'password',
+        'phone'
     ];
 
-    /**
-     * The attributes that should be hidden for serialization.
-     *
-     * @var array<int, string>
-     */
     protected $hidden = [
         'password',
         'remember_token',
     ];
 
-    /**
-     * Get the attributes that should be cast.
-     *
-     * @return array<string, string>
-     */
     protected function casts(): array
     {
         return [
@@ -44,19 +33,18 @@ class User extends Authenticatable
         ];
     }
 
-
     public function role()
     {
         return $this->belongsTo(Role::class);
     }
 
+    public function event()
+    {
+        return $this->belongsTo(Event::class);
+    }
+
     public function appointments()
     {
         return $this->hasMany(Appointment::class);
-    }
-    // Define the relationship to Specialty
-    public function specialty()
-    {
-        return $this->belongsTo(Specialty::class);
     }
 }
