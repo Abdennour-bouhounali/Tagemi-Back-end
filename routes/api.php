@@ -21,8 +21,15 @@ use App\Http\Controllers\Content\StaticContentController;
 use App\Http\Controllers\ContactController;
 use App\Http\Controllers\VolunteerController;
 use App\Http\Controllers\UserController;
+use App\Http\Controllers\EventReportController;
 // routes/api.php
 
+Route::middleware('auth:sanctum')->group(function () {
+    Route::get('/events/{eventId}/report', [EventReportController::class, 'show']);
+    Route::post('/events/{eventId}/report', [EventReportController::class, 'createOrUpdate']);
+    Route::post('/events/{eventId}/report/approve', [EventReportController::class, 'approve']);
+    Route::delete('/events/{eventId}/report', [EventReportController::class, 'destroy']);
+});
 use App\Http\Controllers\ArchivedEventStatisticsController;
 
 
@@ -265,3 +272,13 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/comprehensive-report', [ArchivedEventStatisticsController::class, 'comprehensiveReport']);
     });
 });
+
+// Event Reports Routes
+Route::prefix('events/{eventId}/reports')->group(function () {
+    Route::get('/', [EventReportController::class, 'getReport']);
+    Route::post('/', [EventReportController::class, 'storeOrUpdate']);
+    Route::delete('/', [EventReportController::class, 'destroy']);
+});
+
+// Get all reports
+Route::get('/reports', [EventReportController::class, 'getAllReports']);

@@ -17,6 +17,7 @@ use Illuminate\Routing\Controllers\Middleware;
 use Illuminate\Routing\Controllers\HasMiddleware;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 
 class AppointmentController extends Controller implements HasMiddleware
 {
@@ -391,67 +392,71 @@ public function updatePresence(Request $request, $id)
         }
     }
 
-    /**
-     * GET APPOINTMENTS BY EVENT - For CheckPresence table
-     * GET /api/appointments/by-event?event_id=...&status=...&specialty_id=...
-     */
-    public function getByEvent(Request $request)
-    {
-        try {
-            $validated = $request->validate([
-                'event_id' => 'required|exists:events,id',
-                'status' => 'nullable|in:Present,Absent,Pending,Waiting,Completed',
-                'specialty_id' => 'nullable|exists:specialties,id'
-            ]);
+ /**
+ * GET APPOINTMENTS BY EVENT - For CheckPresence table
+ * GET /api/appointments/by-event?event_id=...&status=...&specialty_id=...
+ */
+public function getByEvent(Request $request)
+{
+    try {
+        $validated = $request->validate([
+            'event_id' => 'required|exists:events,id',
+            'status' => 'nullable|in:Present,Absent,Pending,Waiting,Completed',
+            'specialty_id' => 'nullable|exists:specialties,id'
+        ]);
+        
+        $query = Appointment::whereHas('eventSpecialty', function($q) use ($validated) {
+            $q->where('event_id', $validated['event_id']);
             
-            $query = Appointment::whereHas('eventSpecialty', function($q) use ($validated) {
-                $q->where('event_id', $validated['event_id']);
-                
-                if (isset($validated['specialty_id'])) {
-                    $q->where('specialty_id', $validated['specialty_id']);
-                }
-            });
-            
-            if (isset($validated['status'])) {
-                $query->where('status', $validated['status']);
+            if (isset($validated['specialty_id'])) {
+                $q->where('specialty_id', $validated['specialty_id']);
             }
-            
-            $appointments = $query->with([
-                    'eventSpecialty.specialty',
-                    'eventSpecialty.event',
-                    'day',
-                    'hour',
-                    'doctor'
-                ])
-                ->orderBy('day_id', 'asc')
-                ->orderBy('hour_id', 'asc')
-                ->orderBy('patient_id', 'asc')
-                ->get();
-            
-            return response()->json([
-                'appointments' => $appointments,
-                'total' => $appointments->count(),
-                'statistics' => [
-                    'present' => $appointments->where('status', 'Present')->count(),
-                    'absent' => $appointments->where('status', 'Absent')->count(),
-                    'pending' => $appointments->where('status', 'Pending')->count(),
-                    'waiting' => $appointments->where('status', 'Waiting')->count(),
-                    'completed' => $appointments->where('status', 'Completed')->count(),
-                ]
-            ], 200);
-            
-        } catch (\Exception $e) {
-            Log::error('Error fetching event appointments:', [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
-            ]);
-            return response()->json([
-                'message' => 'حدث خطأ أثناء تحميل المواعيد',
-                'error' => config('app.debug') ? $e->getMessage() : 'خطأ داخلي'
-            ], 500);
+        });
+        
+        if (isset($validated['status'])) {
+            $query->where('status', $validated['status']);
         }
+        
+        $appointments = $query->with([
+                'eventSpecialty.specialty',
+                'eventSpecialty.event',
+                'day',
+                'hour',
+                'doctor'
+            ])
+            ->orderBy('day_id', 'asc')
+            ->orderBy('hour_id', 'asc')
+            ->orderBy('patient_id', 'asc')
+            ->get();
+        
+        // ✅ CRITICAL: Append the medical_document_urls accessor to each appointment
+        $appointments->each(function($apt) {
+            $apt->append('medical_document_urls');
+        });
+        
+        return response()->json([
+            'appointments' => $appointments,
+            'total' => $appointments->count(),
+            'statistics' => [
+                'present' => $appointments->where('status', 'Present')->count(),
+                'absent' => $appointments->where('status', 'Absent')->count(),
+                'pending' => $appointments->where('status', 'Pending')->count(),
+                'waiting' => $appointments->where('status', 'Waiting')->count(),
+                'completed' => $appointments->where('status', 'Completed')->count(),
+            ]
+        ], 200);
+        
+    } catch (\Exception $e) {
+        Log::error('Error fetching event appointments:', [
+            'error' => $e->getMessage(),
+            'trace' => $e->getTraceAsString()
+        ]);
+        return response()->json([
+            'message' => 'حدث خطأ أثناء تحميل المواعيد',
+            'error' => config('app.debug') ? $e->getMessage() : 'خطأ داخلي'
+        ], 500);
     }
-
+}
     /**
      * Get available time slots for a specific event specialty and day
      */
@@ -510,12 +515,11 @@ public function getAvailableSlots(Request $request)
      */
     public function storeMultiple(Request $request)
     {
-        // Log incoming request for debugging
         Log::info('Multiple appointments store request:', [
-            'data' => $request->all()
+            'data' => $request->except('medical_documents'),
+            'has_files' => $request->hasFile('medical_documents')
         ]);
 
-        // Validate input data
         try {
             $validatedData = $request->validate([
                 'event_id' => 'required|exists:events,id',
@@ -532,6 +536,8 @@ public function getAvailableSlots(Request $request)
                 'appointments.*.phone' => 'required|string|max:20',
                 'appointments.*.phone2' => 'required|string|max:20',
                 'appointments.*.sex' => 'required|in:0,1',
+                // NEW: Validate medical documents for each appointment
+                'appointments.*.medical_documents.*' => 'nullable|file|mimes:pdf,jpg,jpeg,png,doc,docx|max:10240',
             ]);
         } catch (\Illuminate\Validation\ValidationException $e) {
             Log::error('Validation failed:', $e->errors());
@@ -541,7 +547,6 @@ public function getAvailableSlots(Request $request)
             ], 422);
         }
 
-        // Verify event exists and is active
         $event = Event::find($validatedData['event_id']);
 
         if (!$event) {
@@ -556,7 +561,6 @@ public function getAvailableSlots(Request $request)
             return response()->json(['message' => 'الحدث غير نشط حالياً.'], 403);
         }
 
-        // Verify event specialty belongs to this event
         $eventSpecialty = EventSpecialty::with('specialty')->find($validatedData['event_specialty_id']);
         
         if (!$eventSpecialty) {
@@ -567,7 +571,6 @@ public function getAvailableSlots(Request $request)
             return response()->json(['message' => 'التخصص لا ينتمي لهذا الحدث.'], 422);
         }
 
-        // Verify day belongs to this event specialty
         $dayExists = Day::where('id', $validatedData['day_id'])
             ->where('event_specialty_id', $validatedData['event_specialty_id'])
             ->exists();
@@ -576,7 +579,6 @@ public function getAvailableSlots(Request $request)
             return response()->json(['message' => 'اليوم المختار غير صالح لهذا التخصص.'], 422);
         }
 
-        // Verify hour belongs to this day
         $hourExists = Hour::where('id', $validatedData['hour_id'])
             ->where('day_id', $validatedData['day_id'])
             ->exists();
@@ -585,152 +587,159 @@ public function getAvailableSlots(Request $request)
             return response()->json(['message' => 'الساعة المختارة غير صالحة لهذا اليوم.'], 422);
         }
 
-        // Calculate available slots
         $day = Day::find($validatedData['day_id']);
         $maxSlotsPerHour = $day->number_per_hour;
 
-        // Start transaction
         DB::beginTransaction();
-    try {
-        // Get the hour and lock it
-        $hour = Hour::where('id', $validatedData['hour_id'])
-            ->where('day_id', $validatedData['day_id'])
-            ->lockForUpdate()
-            ->first();
-
-        if (!$hour) {
-            return response()->json(['message' => 'الساعة المختارة غير صالحة.'], 422);
-        }
-
-        // ✅ Check hour counter
-        $availableSlots = $hour->max_allowed - $hour->counter;
-
-        Log::info('Slot availability (counter-based):', [
-            'hour_id' => $hour->id,
-            'counter' => $hour->counter,
-            'max_allowed' => $hour->max_allowed,
-            'available' => $availableSlots,
-            'requested' => count($validatedData['appointments'])
-        ]);
-
-        // Check if enough slots available
-        if ($availableSlots <= 0) {
-            DB::rollBack();
-            return response()->json([
-                'message' => 'جميع المواعيد في هذا الوقت ممتلئة.',
-                'available_slots' => 0
-            ], 409);
-        }
-
-        $appointmentsToCreate = min($availableSlots, count($validatedData['appointments']));
-        $createdAppointments = [];
-        $skippedAppointments = [];
-        $patientIds = [];
-        $duplicatePatients = [];
-
-        // Get doctor for this event specialty
-        $doctor = $eventSpecialty->doctors()->first();
-
-        // Generate starting patient_id with lock
-        $lastAppointment = Appointment::lockForUpdate()->orderBy('patient_id', 'desc')->first();
-        $nextPatientId = $lastAppointment ? $lastAppointment->patient_id + 1 : 1;
-
-        $successfullyCreated = 0;
-
-        foreach ($validatedData['appointments'] as $index => $appointmentData) {
-            // Check if we've reached the slot limit
-            if ($index >= $appointmentsToCreate) {
-                $skippedAppointments[] = $appointmentData['name'] . ' ' . $appointmentData['lastName'];
-                continue;
-            }
-
-            // Build full name
-            $fullName = trim($appointmentData['name'] . ' ' . $appointmentData['lastName']);
-
-            // Check for duplicate patient in this event
-            $existingAppointment = Appointment::whereHas('eventSpecialty', function($query) use ($event) {
-                    $query->where('event_id', $event->id);
-                })
-                ->where('full_name', $fullName)
-                ->where('birthday', $appointmentData['birthday'])
+        try {
+            $hour = Hour::where('id', $validatedData['hour_id'])
+                ->where('day_id', $validatedData['day_id'])
+                ->lockForUpdate()
                 ->first();
 
-            if ($existingAppointment) {
-                $duplicatePatients[] = [
-                    'name' => $fullName,
-                    'patient_id' => $existingAppointment->patient_id
-                ];
-                Log::info('Duplicate patient found:', [
-                    'name' => $fullName,
-                    'existing_patient_id' => $existingAppointment->patient_id
-                ]);
-                continue;
+            if (!$hour) {
+                return response()->json(['message' => 'الساعة المختارة غير صالحة.'], 422);
             }
 
-            // Create appointment
-            $appointment = Appointment::create([
-                'user_id' => 1,
-                'event_id' => $validatedData['event_id'],
-                'event_specialty_id' => $validatedData['event_specialty_id'],
-                'day_id' => $validatedData['day_id'],
-                'hour_id' => $validatedData['hour_id'],
-                'doctor_id' => $doctor ? $doctor->id : null,
-                'full_name' => $fullName,
-                'birthday' => $appointmentData['birthday'],
-                'state' => $appointmentData['state'],
-                'city' => $appointmentData['city'],
-                'diseases' => $appointmentData['diseases'] ?? 'nothing',
-                'phone' => $appointmentData['phone'],
-                'phone2' => $appointmentData['phone2'],
-                'sex' => $appointmentData['sex'],
-                'patient_id' => $nextPatientId,
-                'specialty_order' => 1,
-                'status' => 'Pending',
-                'position' => $hour->counter + $successfullyCreated + 1,
-                'orderList' => 0,
-            ]);
+            $availableSlots = $hour->max_allowed - $hour->counter;
 
-            Log::info('Appointment created:', [
-                'id' => $appointment->id,
-                'patient_id' => $nextPatientId,
-                'name' => $fullName
-            ]);
-
-            $createdAppointments[] = $appointment->load(['eventSpecialty.specialty', 'day', 'hour']);
-            $patientIds[] = $nextPatientId;
-            $nextPatientId++;
-            $successfullyCreated++;
-        }
-
-        // ✅ INCREMENT HOUR COUNTER by number of successfully created appointments
-        if ($successfullyCreated > 0) {
-            $hour->increment('counter', $successfullyCreated);
-            
-            Log::info('Hour counter incremented:', [
+            Log::info('Slot availability (counter-based):', [
                 'hour_id' => $hour->id,
-                'incremented_by' => $successfullyCreated,
-                'new_counter' => $hour->counter,
-                'max_allowed' => $hour->max_allowed
+                'counter' => $hour->counter,
+                'max_allowed' => $hour->max_allowed,
+                'available' => $availableSlots,
+                'requested' => count($validatedData['appointments'])
             ]);
-        }
 
-        // Check if at least one appointment was created
-        if (empty($createdAppointments)) {
-            DB::rollBack();
-            
-            $message = 'لم يتم إنشاء أي موعد.';
-            if (!empty($duplicatePatients)) {
-                $duplicateInfo = implode(', ', array_map(function($dup) {
-                    return $dup['name'];
-                }, $duplicatePatients));
-                $message .= ' المرضى التالية لديهم مواعيد مسبقة: ' . $duplicateInfo;
+            if ($availableSlots <= 0) {
+                DB::rollBack();
+                return response()->json([
+                    'message' => 'جميع المواعيد في هذا الوقت ممتلئة.',
+                    'available_slots' => 0
+                ], 409);
             }
-            
-            return response()->json([
-                'message' => $message,
-                'duplicate_patients' => $duplicatePatients
-            ], 409);
-        }
+
+            $appointmentsToCreate = min($availableSlots, count($validatedData['appointments']));
+            $createdAppointments = [];
+            $skippedAppointments = [];
+            $patientIds = [];
+            $duplicatePatients = [];
+
+            $doctor = $eventSpecialty->doctors()->first();
+
+            $lastAppointment = Appointment::lockForUpdate()->orderBy('patient_id', 'desc')->first();
+            $nextPatientId = $lastAppointment ? $lastAppointment->patient_id + 1 : 1;
+
+            $successfullyCreated = 0;
+
+            foreach ($validatedData['appointments'] as $index => $appointmentData) {
+                if ($index >= $appointmentsToCreate) {
+                    $skippedAppointments[] = $appointmentData['name'] . ' ' . $appointmentData['lastName'];
+                    continue;
+                }
+
+                $fullName = trim($appointmentData['name'] . ' ' . $appointmentData['lastName']);
+
+                $existingAppointment = Appointment::whereHas('eventSpecialty', function($query) use ($event) {
+                        $query->where('event_id', $event->id);
+                    })
+                    ->where('full_name', $fullName)
+                    ->where('birthday', $appointmentData['birthday'])
+                    ->first();
+
+                if ($existingAppointment) {
+                    $duplicatePatients[] = [
+                        'name' => $fullName,
+                        'patient_id' => $existingAppointment->patient_id
+                    ];
+                    Log::info('Duplicate patient found:', [
+                        'name' => $fullName,
+                        'existing_patient_id' => $existingAppointment->patient_id
+                    ]);
+                    continue;
+                }
+
+                // NEW: Handle individual file uploads
+                $medicalDocuments = [];
+                if ($request->hasFile("appointments.$index.medical_documents")) {
+                    $files = $request->file("appointments.$index.medical_documents");
+                    if (!is_array($files)) {
+                        $files = [$files];
+                    }
+
+                    foreach ($files as $file) {
+                        if ($file->isValid()) {
+                            $filename = 'patient_' . $nextPatientId . '_' . time() . '_' . uniqid() . '.' . $file->getClientOriginalExtension();
+                            $path = $file->storeAs('medical-documents', $filename, 'public');
+                            $medicalDocuments[] = $path;
+                        }
+                    }
+                }
+
+                $appointment = Appointment::create([
+                    'user_id' => 1,
+                    'event_id' => $validatedData['event_id'],
+                    'event_specialty_id' => $validatedData['event_specialty_id'],
+                    'day_id' => $validatedData['day_id'],
+                    'hour_id' => $validatedData['hour_id'],
+                    'doctor_id' => $doctor ? $doctor->id : null,
+                    'full_name' => $fullName,
+                    'birthday' => $appointmentData['birthday'],
+                    'state' => $appointmentData['state'],
+                    'city' => $appointmentData['city'],
+                    'diseases' => $appointmentData['diseases'] ?? 'nothing',
+                    'phone' => $appointmentData['phone'],
+                    'phone2' => $appointmentData['phone2'],
+                    'sex' => $appointmentData['sex'],
+                    'patient_id' => $nextPatientId,
+                    'specialty_order' => 1,
+                    'status' => 'Pending',
+                    'position' => $hour->counter + $successfullyCreated + 1,
+                    'orderList' => 0,
+                    'medical_documents' => $medicalDocuments, // NEW
+                ]);
+
+                Log::info('Appointment created:', [
+                    'id' => $appointment->id,
+                    'patient_id' => $nextPatientId,
+                    'name' => $fullName,
+                    'documents_count' => count($medicalDocuments)
+                ]);
+
+                $createdAppointments[] = $appointment->load(['eventSpecialty.specialty', 'day', 'hour']);
+                $patientIds[] = $nextPatientId;
+                $nextPatientId++;
+                $successfullyCreated++;
+            }
+
+            if ($successfullyCreated > 0) {
+                $hour->increment('counter', $successfullyCreated);
+                
+                Log::info('Hour counter incremented:', [
+                    'hour_id' => $hour->id,
+                    'incremented_by' => $successfullyCreated,
+                    'new_counter' => $hour->counter,
+                    'max_allowed' => $hour->max_allowed
+                ]);
+            }
+
+            if (empty($createdAppointments)) {
+                DB::rollBack();
+                
+                $message = 'لم يتم إنشاء أي موعد.';
+                if (!empty($duplicatePatients)) {
+                    $duplicateInfo = implode(', ', array_map(function($dup) {
+                        return $dup['name'];
+                    }, $duplicatePatients));
+                    $message .= ' المرضى التالية لديهم مواعيد مسبقة: ' . $duplicateInfo;
+                }
+                
+                return response()->json([
+                    'message' => $message,
+                    'duplicate_patients' => $duplicatePatients
+                ], 409);
+            }
+
             DB::commit();
 
             $message = sprintf(
@@ -749,7 +758,6 @@ public function getAvailableSlots(Request $request)
                 'event_name' => $event->name,
             ];
 
-            // Add warnings if some appointments were skipped or duplicated
             $warnings = [];
             
             if (!empty($skippedAppointments)) {
@@ -762,7 +770,7 @@ public function getAvailableSlots(Request $request)
 
             if (!empty($duplicatePatients)) {
                 $duplicateInfo = implode(', ', array_map(function($dup) {
-                    return $dup['name'] ;
+                    return $dup['name'];
                 }, $duplicatePatients));
                 $warnings[] = sprintf(
                     'تنبيه: تم تجاوز %d موعد لمرضى لديهم مواعيد مسبقة: %s',
@@ -883,82 +891,92 @@ public function recalculateCounters()
         ], 500);
     }
 }
-    /**
+/**
      * Store a newly created appointment in storage with event ID
      */
-    public function store(Request $request, $eventID)
-    {
-        // Log incoming request for debugging
-        Log::info('Appointment store request:', [
-            'event_id' => $eventID,
-            'data' => $request->all()
+  /**
+ * Store a newly created appointment in storage with event ID
+ */
+public function store(Request $request, $eventID)
+{
+    // Log incoming request for debugging
+    Log::info('Appointment store request:', [
+        'event_id' => $eventID,
+        'data' => $request->except('medical_documents'),
+        'has_files' => $request->hasFile('medical_documents'),
+        'files_count' => $request->hasFile('medical_documents') ? count($request->file('medical_documents')) : 0
+    ]);
+
+    // First, verify event exists and is active
+    $event = Event::find($eventID);
+
+    if (!$event) {
+        return response()->json(['message' => 'الحدث غير موجود.'], 404);
+    }
+
+    if ($event->is_archived) {
+        return response()->json(['message' => 'الحدث مؤرشف ولا يمكن الحجز فيه.'], 403);
+    }
+
+    // Validate input data
+    try {
+        $validatedData = $request->validate([
+            'name' => 'required|string|max:255',
+            'lastName' => 'required|string|max:255',
+            'birthday' => 'required|date|before:today',
+            'state' => 'required|string|max:100',
+            'city' => 'required|string|max:100',
+            'diseases' => 'nullable|string|max:500',
+            'phone' => 'required|string|max:20',
+            'phone2' => 'required|string|max:20',
+            'sex' => 'required|in:0,1',
+            'specialties' => 'required|array|min:1|max:2',
+            'specialties.*.event_specialty_id' => 'required|exists:event_specialties,id',
+            'specialties.*.day_id' => 'required|exists:days,id',
+            'specialties.*.hour_id' => 'required|exists:hours,id',
+            // Validate medical documents
+            'medical_documents.*' => 'nullable|file|mimes:pdf,jpg,jpeg,png,doc,docx|max:10240', // 10MB max per file
         ]);
+        
+        Log::info('Validation passed');
+        
+    } catch (\Illuminate\Validation\ValidationException $e) {
+        Log::error('Validation failed:', $e->errors());
+        return response()->json([
+            'message' => 'خطأ في البيانات المدخلة',
+            'errors' => $e->errors()
+        ], 422);
+    }
 
-        // First, verify event exists and is active
-        $event = Event::find($eventID);
+    // Build full name
+    $fullName = trim($validatedData['name'] . ' ' . $validatedData['lastName']);
 
-        if (!$event) {
-            return response()->json(['message' => 'الحدث غير موجود.'], 404);
-        }
+    // Check for duplicate patient in this event
+    $existingAppointment = Appointment::whereHas('eventSpecialty', function($query) use ($event) {
+            $query->where('event_id', $event->id);
+        })
+        ->where('full_name', $fullName)
+        ->where('birthday', $validatedData['birthday'])
+        ->first();
 
-        if ($event->is_archived) {
-            return response()->json(['message' => 'الحدث مؤرشف ولا يمكن الحجز فيه.'], 403);
-        }
+    if ($existingAppointment) {
+        return response()->json([
+            'message' => 'لديك موعد مسبق في هذا الحدث. رقم المريض: ' . $existingAppointment->patient_id
+        ], 409);
+    }
 
-        // Validate input data
-        try {
-            $validatedData = $request->validate([
-                'name' => 'required|string|max:255',
-                'lastName' => 'required|string|max:255',
-                'birthday' => 'required|date|before:today',
-                'state' => 'required|string|max:100',
-                'city' => 'required|string|max:100',
-                'diseases' => 'nullable|string|max:500',
-                'phone' => 'required|string|max:20',
-                'phone2' => 'required|string|max:20',
-                'sex' => 'required|in:0,1',
-                'specialties' => 'required|array|min:1|max:2',
-                'specialties.*.event_specialty_id' => 'required|exists:event_specialties,id',
-                'specialties.*.day_id' => 'required|exists:days,id',
-                'specialties.*.hour_id' => 'required|exists:hours,id',
-            ]);
-        } catch (\Illuminate\Validation\ValidationException $e) {
-            Log::error('Validation failed:', $e->errors());
+    // Verify all specialties belong to this event and collect them
+    $eventSpecialtyIds = EventSpecialty::where('event_id', $event->id)
+        ->pluck('id')
+        ->toArray();
+
+    foreach ($validatedData['specialties'] as $specialtyData) {
+        if (!in_array($specialtyData['event_specialty_id'], $eventSpecialtyIds)) {
             return response()->json([
-                'message' => 'خطأ في البيانات المدخلة',
-                'errors' => $e->errors()
+                'message' => 'أحد التخصصات المختارة لا ينتمي لهذا الحدث.'
             ], 422);
         }
-
-        // Build full name
-        $fullName = trim($validatedData['name'] . ' ' . $validatedData['lastName']);
-
-        // Check for duplicate patient in this event
-        $existingAppointment = Appointment::whereHas('eventSpecialty', function($query) use ($event) {
-                $query->where('event_id', $event->id);
-            })
-            ->where('full_name', $fullName)
-            ->where('birthday', $validatedData['birthday'])
-            ->first();
-
-        if ($existingAppointment) {
-            return response()->json([
-                'message' => 'لديك موعد مسبق في هذا الحدث. رقم المريض: ' . $existingAppointment->patient_id
-            ], 409);
-        }
-
-        // Verify all specialties belong to this event and collect them
-        $eventSpecialtyIds = EventSpecialty::where('event_id', $event->id)
-            ->pluck('id')
-            ->toArray();
-
-        foreach ($validatedData['specialties'] as $specialtyData) {
-            if (!in_array($specialtyData['event_specialty_id'], $eventSpecialtyIds)) {
-                return response()->json([
-                    'message' => 'أحد التخصصات المختارة لا ينتمي لهذا الحدث.'
-                ], 422);
-            }
-        }
+    }
 
     // Start transaction
     DB::beginTransaction();
@@ -966,6 +984,24 @@ public function recalculateCounters()
         // Generate next patient_id with lock to prevent race conditions
         $lastAppointment = Appointment::lockForUpdate()->orderBy('patient_id', 'desc')->first();
         $nextPatientId = $lastAppointment ? $lastAppointment->patient_id + 1 : 1;
+
+        Log::info('Generated patient_id:', [
+            'patient_id' => $nextPatientId
+        ]);
+
+        // Handle file uploads BEFORE creating appointments
+        Log::info('About to handle medical documents', [
+            'patient_id' => $nextPatientId,
+            'has_files' => $request->hasFile('medical_documents')
+        ]);
+        
+        $medicalDocuments = $this->handleMedicalDocuments($request, $nextPatientId);
+        
+        Log::info('Medical documents handled:', [
+            'patient_id' => $nextPatientId,
+            'files_saved' => count($medicalDocuments),
+            'paths' => $medicalDocuments
+        ]);
 
         $appointments = [];
         $waitingListSpecialties = [];
@@ -1001,14 +1037,14 @@ public function recalculateCounters()
             // Verify hour belongs to this day
             $hour = Hour::where('id', $specialtyData['hour_id'])
                 ->where('day_id', $specialtyData['day_id'])
-                ->lockForUpdate()  // ✅ Lock the hour for update
+                ->lockForUpdate()
                 ->first();
 
             if (!$hour) {
                 throw new \Exception('الساعة المختارة غير صالحة لهذا اليوم.');
             }
 
-            // ✅ Check if hour is already full using counter
+            // Check if hour is already full using counter
             if ($hour->counter >= $hour->max_allowed) {
                 $waitingListSpecialties[] = $eventSpecialty->specialty->name;
                 Log::info('Slot full (counter check):', [
@@ -1044,7 +1080,7 @@ public function recalculateCounters()
             // Get doctor for this event specialty
             $doctor = $eventSpecialty->doctors()->first();
 
-            // Create appointment
+            // Create appointment WITH medical documents
             $appointment = Appointment::create([
                 'user_id' => 1,
                 'event_id' => $eventID,
@@ -1065,17 +1101,23 @@ public function recalculateCounters()
                 'status' => 'Pending',
                 'position' => $appointmentCount + 1,
                 'orderList' => 0,
+                'medical_documents' => $medicalDocuments, // Include medical documents
             ]);
 
-            // ✅ INCREMENT HOUR COUNTER
+            // Increment hour counter
             $hour->increment('counter');
 
-            Log::info('Appointment created and counter incremented:', [
+            // Reload appointment to verify data was saved
+            $appointment->refresh();
+
+            Log::info('Appointment created with documents:', [
                 'appointment_id' => $appointment->id,
                 'patient_id' => $nextPatientId,
                 'hour_id' => $hour->id,
                 'new_counter' => $hour->counter,
-                'max_allowed' => $hour->max_allowed
+                'max_allowed' => $hour->max_allowed,
+                'documents_count' => count($medicalDocuments),
+                'documents_in_db' => $appointment->medical_documents // Verify what was actually saved
             ]);
 
             $appointments[] = $appointment->load(['eventSpecialty.specialty', 'day', 'hour']);
@@ -1084,6 +1126,12 @@ public function recalculateCounters()
         // Check if at least one appointment was created
         if (empty($appointments)) {
             DB::rollBack();
+            
+            // Clean up uploaded files if no appointments created
+            foreach ($medicalDocuments as $path) {
+                Storage::disk('public')->delete($path);
+            }
+            
             return response()->json([
                 'message' => 'جميع المواعيد المطلوبة ممتلئة.',
                 'waiting_list_specialties' => $waitingListSpecialties
@@ -1092,7 +1140,7 @@ public function recalculateCounters()
 
         DB::commit();
 
-        $message = 'تم حجز موعدك بنجاح!' ;
+        $message = 'تم حجز موعدك بنجاح!';
         $waitingMessage = '';
 
         if (!empty($waitingListSpecialties)) {
@@ -1106,22 +1154,136 @@ public function recalculateCounters()
             'patient_id' => $nextPatientId,
             'event_id' => $event->id,
             'event_name' => $event->name,
+            'documents_uploaded' => count($medicalDocuments),
         ], 201);
 
-        } catch (\Exception $e) {
-            DB::rollBack();
-            Log::error('Appointment creation error:', [
-                'event_id' => $eventID,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
-            ]);
-            return response()->json([
-                'message' => 'حدث خطأ أثناء حجز الموعد: ' . $e->getMessage(),
-                'error' => config('app.debug') ? $e->getMessage() : 'خطأ داخلي في الخادم'
-            ], 500);
+    } catch (\Exception $e) {
+        DB::rollBack();
+        
+        // Clean up uploaded files on error
+        if (isset($medicalDocuments)) {
+            foreach ($medicalDocuments as $path) {
+                Storage::disk('public')->delete($path);
+            }
         }
+        
+        Log::error('Appointment creation error:', [
+            'event_id' => $eventID,
+            'error' => $e->getMessage(),
+            'trace' => $e->getTraceAsString()
+        ]);
+        return response()->json([
+            'message' => 'حدث خطأ أثناء حجز الموعد: ' . $e->getMessage(),
+            'error' => config('app.debug') ? $e->getMessage() : 'خطأ داخلي في الخادم'
+        ], 500);
+    }
+}
+
+/**
+ * Handle medical document uploads
+ * 
+ * @param Request $request
+ * @param string $patientId
+ * @return array Array of file paths
+ */
+private function handleMedicalDocuments(Request $request, $patientId)
+{
+    $filePaths = [];
+
+    Log::info('handleMedicalDocuments called', [
+        'patient_id' => $patientId,
+        'has_files' => $request->hasFile('medical_documents'),
+        'all_files' => $request->allFiles()
+    ]);
+
+    if ($request->hasFile('medical_documents')) {
+        $files = $request->file('medical_documents');
+        
+        Log::info('Files received:', [
+            'is_array' => is_array($files),
+            'count' => is_array($files) ? count($files) : 1,
+            'type' => gettype($files)
+        ]);
+        
+        // Ensure it's an array
+        if (!is_array($files)) {
+            $files = [$files];
+        }
+
+        foreach ($files as $index => $file) {
+            Log::info('Processing file', [
+                'index' => $index,
+                'is_valid' => $file->isValid(),
+                'original_name' => $file->getClientOriginalName(),
+                'size' => $file->getSize(),
+                'mime' => $file->getMimeType(),
+                'error' => $file->getError()
+            ]);
+            
+            // Validate file
+            if ($file->isValid()) {
+                try {
+                    // Generate unique filename
+                    $filename = 'patient_' . $patientId . '_' . time() . '_' . uniqid() . '.' . $file->getClientOriginalExtension();
+                    
+                    Log::info('Attempting to store file:', [
+                        'filename' => $filename,
+                        'disk' => 'public',
+                        'directory' => 'medical-documents'
+                    ]);
+                    
+                    // Store in storage/app/public/medical-documents
+                    $path = $file->storeAs('medical-documents', $filename, 'public');
+                    
+                    // Verify file was stored
+                    if (Storage::disk('public')->exists($path)) {
+                        $fullPath = Storage::disk('public')->path($path);
+                        $fileSize = Storage::disk('public')->size($path);
+                        
+                        $filePaths[] = $path;
+                        
+                        Log::info('Medical document uploaded successfully:', [
+                            'patient_id' => $patientId,
+                            'filename' => $filename,
+                            'path' => $path,
+                            'full_path' => $fullPath,
+                            'size' => $fileSize,
+                            'exists' => file_exists($fullPath)
+                        ]);
+                    } else {
+                        Log::error('File was not stored - Storage::exists returned false:', [
+                            'path' => $path,
+                            'filename' => $filename,
+                            'storage_path' => Storage::disk('public')->path('medical-documents')
+                        ]);
+                    }
+                    
+                } catch (\Exception $e) {
+                    Log::error('Error storing file:', [
+                        'error' => $e->getMessage(),
+                        'trace' => $e->getTraceAsString(),
+                        'file' => $file->getClientOriginalName()
+                    ]);
+                }
+            } else {
+                Log::warning('Invalid file received:', [
+                    'error_code' => $file->getError(),
+                    'error_message' => $file->getErrorMessage(),
+                    'original_name' => $file->getClientOriginalName()
+                ]);
+            }
+        }
+    } else {
+        Log::info('No files in request - hasFile returned false');
     }
 
+    Log::info('handleMedicalDocuments result:', [
+        'files_saved' => count($filePaths),
+        'paths' => $filePaths
+    ]);
+
+    return $filePaths;
+}
     /**
      * Display appointments for a specific event
      */

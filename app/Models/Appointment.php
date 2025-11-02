@@ -16,8 +16,8 @@ class Appointment extends Model
         'event_id',
         'full_name',
         'birthday',
-        'state',           // NEW - replaces residence
-        'city',            // NEW
+        'state',
+        'city',
         'diseases',
         'phone',
         'phone2',
@@ -31,19 +31,22 @@ class Appointment extends Model
         'is_special',
         'archived_at',
         'archived_reason',
+        'medical_documents', // NEW
     ];
 
     protected $casts = [
         'birthday' => 'date',
         'is_special' => 'boolean',
         'archived_at' => 'datetime',
+        'medical_documents' => 'array', // NEW - Cast JSON to array
     ];
 
     public function user()
     {
         return $this->belongsTo(User::class);
     }
-        public function archivedAppointments()
+    
+    public function archivedAppointments()
     {
         return $this->hasMany(AppointmentArchive::class, 'event_id');
     }
@@ -53,10 +56,11 @@ class Appointment extends Model
         return $this->belongsTo(Event::class);
     }
 
-        public function eventSpecialty()
+    public function eventSpecialty()
     {
         return $this->belongsTo(EventSpecialty::class);
     }
+    
     public function specialty()
     {
         return $this->belongsTo(Specialty::class, 'event_specialty_id', 'id')
@@ -82,5 +86,19 @@ class Appointment extends Model
     public function getSpecialtyAttribute()
     {
         return $this->eventSpecialty?->specialty;
+    }
+
+    /**
+     * Get full URLs for medical documents
+     */
+    public function getMedicalDocumentUrlsAttribute()
+    {
+        if (!$this->medical_documents) {
+            return [];
+        }
+
+        return array_map(function($path) {
+            return asset('storage/' . $path);
+        }, $this->medical_documents);
     }
 }

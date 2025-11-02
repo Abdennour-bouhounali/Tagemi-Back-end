@@ -49,6 +49,10 @@ class Event extends Model
     {
         return $this->hasMany(User::class);
     }
+    public function report()
+        {
+            return $this->hasOne(EventReport::class);
+        }
 
     public function eventSpecialties(): HasMany
     {

@@ -12,11 +12,10 @@ class AppointmentArchive extends Model
 
     protected $table = 'appointments_archive';
     
-    // CRITICAL: Disable auto-increment since we're copying IDs
     public $incrementing = false;
 
     protected $fillable = [
-        'id', // IMPORTANT: Add id to fillable
+        'id',
         'event_id',
         'user_id',
         'event_specialty_id',
@@ -40,6 +39,7 @@ class AppointmentArchive extends Model
         'is_special',
         'archived_at',
         'archived_reason',
+        'medical_documents', // NEW
         'created_at',
         'updated_at',
     ];
@@ -50,9 +50,11 @@ class AppointmentArchive extends Model
         'archived_at' => 'datetime',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
+        'medical_documents' => 'array', // NEW
     ];
 
-    // Relationships
+    // ... rest of the relationships and methods remain the same
+    
     public function user()
     {
         return $this->belongsTo(User::class);
@@ -83,7 +85,6 @@ class AppointmentArchive extends Model
         return $this->belongsTo(Event::class);
     }
 
-    // Scopes
     public function scopeForEvent($query, $eventId)
     {
         return $query->where('event_id', $eventId);
@@ -100,9 +101,22 @@ class AppointmentArchive extends Model
                     ->whereYear('archived_at', now()->year);
     }
 
-    // Accessors
     public function getAgeAttribute()
     {
         return Carbon::parse($this->birthday)->age;
+    }
+
+    /**
+     * Get full URLs for medical documents
+     */
+    public function getMedicalDocumentUrlsAttribute()
+    {
+        if (!$this->medical_documents) {
+            return [];
+        }
+
+        return array_map(function($path) {
+            return asset('storage/' . $path);
+        }, $this->medical_documents);
     }
 }
