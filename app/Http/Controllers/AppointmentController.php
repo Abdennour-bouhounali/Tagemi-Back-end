@@ -1432,6 +1432,115 @@ public function destroy(Appointment $appointment)
         return $this->storeMultiple($request);
     }
 
+    public function update(Request $request, $id)
+{
+    try {
+        $appointment = Appointment::with([
+            'eventSpecialty.specialty',
+            'eventSpecialty.event',
+            'day',
+            'hour',
+            'doctor'
+        ])->find($id);
+
+        if (!$appointment) {
+            return response()->json([
+                'message' => 'الموعد غير موجود'
+            ], 404);
+        }
+
+        // Validate input
+        $validated = $request->validate([
+            'name' => 'sometimes|required|string|max:255',
+            'lastName' => 'sometimes|required|string|max:255',
+            'birthday' => 'sometimes|required|date|before:today',
+            'state' => 'sometimes|required|string|max:100',
+            'city' => 'sometimes|required|string|max:100',
+            'diseases' => 'nullable|string|max:500',
+            'phone' => 'sometimes|required|string|max:20',
+            'phone2' => 'sometimes|required|string|max:20',
+            'sex' => 'sometimes|required|in:0,1',
+        ]);
+
+        DB::beginTransaction();
+
+        // Update full_name if name or lastName changed
+        if (isset($validated['name']) || isset($validated['lastName'])) {
+            $nameParts = explode(' ', $appointment->full_name, 2);
+            $firstName = $validated['name'] ?? $nameParts[0];
+            $lastName = $validated['lastName'] ?? ($nameParts[1] ?? '');
+            $appointment->full_name = trim($firstName . ' ' . $lastName);
+        }
+
+        // Update other fields
+        if (isset($validated['birthday'])) {
+            $appointment->birthday = $validated['birthday'];
+        }
+        if (isset($validated['state'])) {
+            $appointment->state = $validated['state'];
+        }
+        if (isset($validated['city'])) {
+            $appointment->city = $validated['city'];
+        }
+        if (isset($validated['diseases'])) {
+            $appointment->diseases = $validated['diseases'] ?: 'nothing';
+        }
+        if (isset($validated['phone'])) {
+            $appointment->phone = $validated['phone'];
+        }
+        if (isset($validated['phone2'])) {
+            $appointment->phone2 = $validated['phone2'];
+        }
+        if (isset($validated['sex'])) {
+            $appointment->sex = $validated['sex'];
+        }
+
+        $appointment->save();
+
+        DB::commit();
+
+        // Reload with relationships
+        $appointment->load([
+            'eventSpecialty.specialty',
+            'eventSpecialty.event',
+            'day',
+            'hour',
+            'doctor'
+        ]);
+
+        Log::info('Appointment updated:', [
+            'appointment_id' => $id,
+            'patient_id' => $appointment->patient_id,
+            'updated_by' => Auth::id()
+        ]);
+
+        return response()->json([
+            'message' => 'تم تحديث معلومات الموعد بنجاح',
+            'appointment' => $appointment
+        ], 200);
+
+    } catch (\Illuminate\Validation\ValidationException $e) {
+        return response()->json([
+            'message' => 'خطأ في البيانات المدخلة',
+            'errors' => $e->errors()
+        ], 422);
+    } catch (\Exception $e) {
+        DB::rollBack();
+        
+        Log::error('Update appointment error:', [
+            'appointment_id' => $id,
+            'error' => $e->getMessage(),
+            'trace' => $e->getTraceAsString()
+        ]);
+        
+        return response()->json([
+            'message' => 'حدث خطأ أثناء تحديث الموعد',
+            'error' => config('app.debug') ? $e->getMessage() : 'خطأ داخلي'
+        ], 500);
+    }
+}
+
+
     /**
      * Delete duplicate appointments
      */

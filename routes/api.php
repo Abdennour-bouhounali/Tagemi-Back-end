@@ -68,7 +68,6 @@ Route::post('/volunteers', [VolunteerController::class, 'store']);
 // ============================================
 Route::get('/public/events/{id}', [EventController::class, 'show']);
 Route::get('/public/events/{id}/specialties', [EventController::class, 'getSpecialties']);
-Route::apiResource('rules', RuleController::class);
 
 Route::middleware('auth:sanctum')->group(function () {
 // Auth user info with event and specialties
@@ -154,6 +153,9 @@ Route::get('/user', function(Request $request) {
     Route::post('/appointment/SpecialCase/{id}', [AppointmentController::class, 'SpecialCase']);
     Route::post('/appointment/addComment', [AppointmentController::class, 'addComment']);
     Route::patch('/appointments/{id}/presence', [AppointmentController::class, 'updatePresence']);
+    Route::put('/appointments/{id}', [AppointmentController::class, 'update']);
+    Route::patch('/appointments/{id}', [AppointmentController::class, 'update']); // Also support PATCH
+
     
     // Appointment queries
     Route::get('/appointments/by-event', [AppointmentController::class, 'getByEvent']);

@@ -892,17 +892,20 @@ public function index()
      */
    public function store(Request $request)
 {
-        $validator = Validator::make($request->all(), [
+            $validator = Validator::make($request->all(), [
         'name' => 'required|string|max:255',
         'date' => 'required|date',
         'state' => 'nullable|string|max:255',
         'city' => 'nullable|string|max:255',
         'description' => 'nullable|string',
+        'nbr_of_allowed_specialties' => 'nullable|integer|min:1|max:5', // ADD THIS
         'is_active' => 'nullable|boolean',
         'is_tawat' => 'nullable|boolean',
+        'rules_ids' => 'nullable|array', // ADD THIS
+        'rules_ids.*' => 'integer|exists:rules,id', // ADD THIS
         'specialties' => 'required|array|min:1',
         'specialties.*.id' => 'required|exists:specialties,id',
-        'specialties.*.description' => 'nullable|string|max:500', // ADD THIS
+        'specialties.*.description' => 'nullable|string|max:500',
         'specialties.*.doctors' => 'nullable|array',
         'specialties.*.doctors.*' => 'exists:doctors,id',
         'specialties.*.is_saturated' => 'nullable|boolean',
@@ -989,6 +992,8 @@ public function index()
             'state' => $request->state,
             'city' => $request->city,
             'description' => $request->description,
+            'nbr_of_allowed_specialties' => $request->nbr_of_allowed_specialties ?? 1,
+            'rules_ids' => $request->rules_ids ?? [], // ADD THIS
             'is_active' => $request->is_active ?? true,
             'is_tawat' => $request->is_tawat ?? true,
             'is_archived' => false,
@@ -1096,23 +1101,26 @@ public function index()
     public function update(Request $request, $id)
     {
         $event = Event::findOrFail($id);
-        
-        $validated = $request->validate([
-            'name' => 'required|string|max:255',
-            'date' => 'required|date',
-            'state' => 'nullable|string|max:255',
-            'city' => 'nullable|string|max:255',
-            'description' => 'nullable|string',
-            'is_active' => 'nullable|boolean',
-            'is_tawat' => 'nullable|boolean',
-        ]);
+    
+    $validated = $request->validate([
+        'name' => 'required|string|max:255',
+        'date' => 'required|date',
+        'state' => 'nullable|string|max:255',
+        'city' => 'nullable|string|max:255',
+        'description' => 'nullable|string',
+        'nbr_of_allowed_specialties' => 'nullable|integer|min:1|max:5',
+        'rules_ids' => 'nullable|array', // ADD THIS
+        'rules_ids.*' => 'integer|exists:rules,id', // ADD THIS
+        'is_active' => 'nullable|boolean',
+        'is_tawat' => 'nullable|boolean',
+    ]);
         
         $event->update($validated);
         
-        return response()->json([
-            'message' => 'تم تحديث الحدث بنجاح',
-            'event' => $event
-        ]);
+    return response()->json([
+        'message' => 'تم تحديث الحدث بنجاح',
+        'event' => $event->load('rules') // Load rules relationship
+    ]);
     }
 
     /**
@@ -1128,6 +1136,9 @@ public function index()
             'description' => 'nullable|string',
             'is_active' => 'nullable|boolean',
             'is_tawat' => 'nullable|boolean',
+            'nbr_of_allowed_specialties' => 'nullable|integer|min:1|max:5', // ADD THIS
+            'rules_ids' => 'nullable|array', // ADD THIS
+            'rules_ids.*' => 'integer|exists:rules,id', // ADD THIS
             'specialties' => 'nullable|array',
             'specialties.*.id' => 'required|exists:specialties,id',
             'specialties.*.eventSpecialtyId' => 'nullable|integer',
@@ -1161,6 +1172,8 @@ public function index()
                 'state' => $request->state,
                 'city' => $request->city,
                 'description' => $request->description,
+                'nbr_of_allowed_specialties' => $request->nbr_of_allowed_specialties ?? $event->nbr_of_allowed_specialties,
+                'rules_ids' => $request->rules_ids ?? $event->rules_ids, // ADD THIS
                 'is_active' => $request->is_active ?? $event->is_active,
                 'is_tawat' => $request->is_tawat ?? $event->is_tawat,
             ]);
@@ -1365,7 +1378,24 @@ public function index()
             ], 500);
         }
     }
-
+public function showWithRules($id)
+{
+    try {
+        $event = Event::findOrFail($id);
+        $rules = $event->rules; // Get rules using the relationship
+        
+        return response()->json([
+            'event' => $event,
+            'rules' => $rules
+        ], 200);
+    } catch (\Exception $e) {
+        Log::error('Error fetching event with rules:', ['id' => $id, 'error' => $e->getMessage()]);
+        return response()->json([
+            'message' => 'فشل في تحميل بيانات الحدث',
+            'error' => config('app.debug') ? $e->getMessage() : 'خطأ داخلي'
+        ], 500);
+    }
+}
     /**
      * Archive an event
      */

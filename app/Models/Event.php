@@ -15,6 +15,8 @@ class Event extends Model
         'city',
         'type',
         'description',
+        'nbr_of_allowed_specialties', // add this default 1
+        'rules_ids', // ADD THIS
         'is_active',
         'is_archived',
         'is_tawat',
@@ -28,6 +30,8 @@ class Event extends Model
         'is_active' => 'boolean',
         'is_archived' => 'boolean',
         'is_tawat' => 'boolean',
+        'rules_ids' => 'array', // ADD THIS - cast to array
+
     ];
 
     public function specialAdmin(): BelongsTo
@@ -73,5 +77,13 @@ class Event extends Model
     public function archivedAppointments(): HasMany
     {
         return $this->hasMany(AppointmentArchive::class, 'event_id');
+    }
+
+         public function getRulesAttribute()
+    {
+        if (empty($this->rules_ids)) {
+            return collect([]);
+        }
+        return Rule::whereIn('id', $this->rules_ids)->orderBy('id')->get();
     }
 }
