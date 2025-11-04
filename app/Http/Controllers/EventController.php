@@ -892,7 +892,7 @@ public function index()
      */
    public function store(Request $request)
 {
-    $validator = Validator::make($request->all(), [
+        $validator = Validator::make($request->all(), [
         'name' => 'required|string|max:255',
         'date' => 'required|date',
         'state' => 'nullable|string|max:255',
@@ -902,6 +902,7 @@ public function index()
         'is_tawat' => 'nullable|boolean',
         'specialties' => 'required|array|min:1',
         'specialties.*.id' => 'required|exists:specialties,id',
+        'specialties.*.description' => 'nullable|string|max:500', // ADD THIS
         'specialties.*.doctors' => 'nullable|array',
         'specialties.*.doctors.*' => 'exists:doctors,id',
         'specialties.*.is_saturated' => 'nullable|boolean',
@@ -911,6 +912,7 @@ public function index()
         'specialties.*.days.*.hours' => 'required|array|min:1',
         'specialties.*.days.*.hours.*.time' => 'required|date_format:H:i:s',
     ]);
+
 
     if ($validator->fails()) {
         return response()->json([
@@ -1005,15 +1007,16 @@ public function index()
             $isSaturated = $specData['is_saturated'] ?? false;
 
             $eventSpecialty = EventSpecialty::create([
-                'event_id' => $event->id,
-                'specialty_id' => $specData['id'],
-                'is_saturated' => $isSaturated,
-                'max_number' => 100,
-                'start_time' => $specData['start_time'] ?? '08:00:00',
-                'addition_capacity' => 0,
-                'flag' => 'Open',
-                'is_active' => true,
-            ]);
+                    'event_id' => $event->id,
+                    'specialty_id' => $specData['id'],
+                    'description' => $specData['description'] ?? null, // ADD THIS
+                    'is_saturated' => $isSaturated,
+                    'max_number' => 100,
+                    'start_time' => $specData['start_time'] ?? '08:00:00',
+                    'addition_capacity' => 0,
+                    'flag' => 'Open',
+                    'is_active' => true,
+                ]);
 
             if (!empty($specData['doctors'])) {
                 $eventSpecialty->doctors()->attach($specData['doctors']);
@@ -1138,6 +1141,7 @@ public function index()
             'specialties.*.days.*.hours' => 'required|array|min:1',
             'specialties.*.days.*.hours.*.id' => 'nullable|integer',
             'specialties.*.days.*.hours.*.time' => 'required|date_format:H:i:s',
+            'specialties.*.description' => 'nullable|string|max:500',
         ]);
 
         if ($validator->fails()) {
@@ -1173,6 +1177,7 @@ public function index()
                         if ($eventSpecialty && $eventSpecialty->event_id == $event->id) {
                             $eventSpecialty->update([
                                 'specialty_id' => $specData['id'],
+                                'description' => $specData['description'] ?? null, // ADD THIS
                                 'is_saturated' => $isSaturated,
                             ]);
                             
@@ -1181,6 +1186,7 @@ public function index()
                             $eventSpecialty = EventSpecialty::create([
                                 'event_id' => $event->id,
                                 'specialty_id' => $specData['id'],
+                                'description' => $specData['description'] ?? null, // ADD THIS
                                 'is_saturated' => $isSaturated,
                                 'max_number' => 100,
                                 'start_time' => '08:00:00',

@@ -12,6 +12,7 @@ class EventSpecialty extends Model
     protected $fillable = [
         'event_id',
         'specialty_id',
+        'description', // add this 
         'is_saturated',
         'max_number',
         'start_time',

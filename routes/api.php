@@ -15,7 +15,7 @@ use App\Http\Controllers\Content\BlogController;
 use App\Http\Controllers\Content\TypeController;
 use App\Http\Controllers\Content\MediaController;
 use App\Http\Controllers\Content\SponsorController;
-use App\Http\Controllers\Content\ActivityController;
+use App\Http\Controllers\ActivityController;
 use App\Http\Controllers\Content\FutureProjectController;
 use App\Http\Controllers\Content\StaticContentController;
 use App\Http\Controllers\ContactController;
@@ -48,8 +48,6 @@ Route::get('/appointments/available-slots', [AppointmentController::class, 'getA
 Route::post('/appointments/recalculate-counters', [AppointmentController::class, 'recalculateCounters'])
     ->middleware(['auth:sanctum', 'role:1']); // Only super admin
 // Public content
-Route::apiResource('activities', ActivityController::class);
-Route::get('activities/showByActivitiesType/{id}', [ActivityController::class, 'showByActivitiesType']);
 
 // Public contacts and volunteers
 Route::get('/volunteers', [VolunteerController::class, 'index']);
@@ -249,9 +247,7 @@ Route::get('/user', function(Request $request) {
 Route::middleware('auth:sanctum')->get('/getdisplayAuth', [UserController::class, 'getdisplayAuth']);
 Route::apiResource('types', TypeController::class);
 
- // Activities
-    Route::post('activities/makeSpecial/{id}', [ActivityController::class, 'makeSpecial']);
-    
+ // Activities    
     // Projects
     Route::apiResource('projects', FutureProjectController::class);
      Route::apiResource('media', MediaController::class);
@@ -282,3 +278,23 @@ Route::prefix('events/{eventId}/reports')->group(function () {
 
 // Get all reports
 Route::get('/reports', [EventReportController::class, 'getAllReports']);
+
+// Activities Routes
+Route::prefix('activities')->group(function () {
+    // Public routes
+    Route::get('/', [ActivityController::class, 'index']);
+    Route::get('/type/{typeId}', [ActivityController::class, 'showByType']);
+    Route::get('/{id}', [ActivityController::class, 'show']);
+
+    
+    // Protected routes for admin (require authentication)
+    Route::middleware(['auth:sanctum'])->group(function () {
+        Route::post('/', [ActivityController::class, 'store']);
+        Route::put('/{id}', [ActivityController::class, 'update']);
+        Route::patch('/{id}', [ActivityController::class, 'update']); // Also support PATCH
+        Route::delete('/{id}', [ActivityController::class, 'destroy']);
+        Route::post('/{id}/reorder-media', [ActivityController::class, 'reorderMedia']);
+    });
+});
+
+
