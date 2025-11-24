@@ -714,6 +714,11 @@ public function getAvailableSlots(Request $request)
 
             if ($successfullyCreated > 0) {
                 $hour->increment('counter', $successfullyCreated);
+                    // ✅ ADD THIS: Check if EventSpecialty is now saturated
+                    $eventSpecialty = EventSpecialty::find($validatedData['event_specialty_id']);
+                    if ($eventSpecialty) {
+                        $this->checkAndUpdateSaturation($eventSpecialty);
+                    }
                 
                 Log::info('Hour counter incremented:', [
                     'hour_id' => $hour->id,
@@ -889,6 +894,60 @@ public function recalculateCounters()
         return response()->json([
             'message' => 'حدث خطأ أثناء التحقق من الأماكن المتاحة.'
         ], 500);
+    }
+}
+
+
+/**
+ * Check if an EventSpecialty should be marked as saturated
+ * and update its status accordingly
+ */
+private function checkAndUpdateSaturation(EventSpecialty $eventSpecialty)
+{
+    // Check if any hour still has available slots for this specialty
+    $hasAvailableSlot = Hour::whereHas('day', function($query) use ($eventSpecialty) {
+            $query->where('event_specialty_id', $eventSpecialty->id);
+        })
+        ->whereRaw('counter < max_allowed')
+        ->exists();
+    
+    // If no available slots and not already saturated, mark as saturated
+    if (!$hasAvailableSlot && !$eventSpecialty->is_saturated) {
+        $eventSpecialty->is_saturated = true;
+        $eventSpecialty->save();
+        
+        Log::info('EventSpecialty marked as saturated:', [
+            'event_specialty_id' => $eventSpecialty->id,
+            'specialty_name' => $eventSpecialty->specialty->name ?? 'unknown'
+        ]);
+    }
+}
+
+/**
+ * Check if an EventSpecialty should be un-saturated
+ * (called when appointments are deleted)
+ */
+private function checkAndRemoveSaturation(EventSpecialty $eventSpecialty)
+{
+    if (!$eventSpecialty->is_saturated) {
+        return;
+    }
+    
+    // Check if any hour now has available slots
+    $hasAvailableSlot = Hour::whereHas('day', function($query) use ($eventSpecialty) {
+            $query->where('event_specialty_id', $eventSpecialty->id);
+        })
+        ->whereRaw('counter < max_allowed')
+        ->exists();
+    
+    if ($hasAvailableSlot) {
+        $eventSpecialty->is_saturated = false;
+        $eventSpecialty->save();
+        
+        Log::info('EventSpecialty un-saturated:', [
+            'event_specialty_id' => $eventSpecialty->id,
+            'specialty_name' => $eventSpecialty->specialty->name ?? 'unknown'
+        ]);
     }
 }
 /**
@@ -1106,6 +1165,8 @@ public function store(Request $request, $eventID)
 
             // Increment hour counter
             $hour->increment('counter');
+            $this->checkAndUpdateSaturation($eventSpecialty);
+
 
             // Reload appointment to verify data was saved
             $appointment->refresh();
@@ -1385,11 +1446,14 @@ private function handleMedicalDocuments(Request $request, $patientId)
     /**
      * Delete appointment
      */
-public function destroy(Appointment $appointment)
+    public function destroy(Appointment $appointment)
 {
     DB::beginTransaction();
     try {
-        // ✅ Decrement hour counter before deleting
+        // Store event_specialty_id before deleting
+        $eventSpecialtyId = $appointment->event_specialty_id;
+        
+        // Decrement hour counter before deleting
         $hour = Hour::find($appointment->hour_id);
         if ($hour && $hour->counter > 0) {
             $hour->decrement('counter');
@@ -1402,6 +1466,12 @@ public function destroy(Appointment $appointment)
         }
 
         $appointment->delete();
+
+        // ✅ Check if EventSpecialty should be un-saturated
+        $eventSpecialty = EventSpecialty::find($eventSpecialtyId);
+        if ($eventSpecialty) {
+            $this->checkAndRemoveSaturation($eventSpecialty);
+        }
 
         DB::commit();
 
@@ -1591,4 +1661,41 @@ public function destroy(Appointment $appointment)
             ], 500);
         }
     }
+
+public function getPatientAppointments($patientId, $eventId)
+{
+    try {
+        $appointments = Appointment::with(['eventSpecialty.specialty', 'hour'])
+            ->where('patient_id', $patientId)
+            ->where('event_id', $eventId)
+            ->orderBy('created_at', 'desc')
+            ->get()
+            ->map(function($appointment) {
+                return [
+                    'id' => $appointment->id,
+                    'event_specialty_id' => $appointment->event_specialty_id,
+                    'speciality_name' => $appointment->eventSpecialty?->specialty?->name ?? 'غير محدد',
+                    'status' => $appointment->status,
+                    'hour' => $appointment->hour?->time ?? null,
+                    'is_special' => $appointment->is_special,
+                    'orderList' => $appointment->orderList,
+                    'comment' => $appointment->comment,
+                    'created_at' => $appointment->created_at->format('Y-m-d H:i')
+                ];
+            });
+
+        return response()->json([
+            'success' => true,
+            'appointments' => $appointments
+        ], 200);
+    } catch (\Exception $e) {
+        \Log::error('Error fetching patient appointments: ' . $e->getMessage());
+        
+        return response()->json([
+            'success' => false,
+            'message' => 'حدث خطأ أثناء جلب المواعيد',
+            'error' => $e->getMessage()
+        ], 500);
+    }
+}
 }

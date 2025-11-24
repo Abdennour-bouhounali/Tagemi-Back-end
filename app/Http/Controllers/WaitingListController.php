@@ -24,7 +24,7 @@ class WaitingListController extends Controller implements HasMiddleware
     public static function middleware()
     {
         return [
-            new Middleware('auth:sanctum')
+            new Middleware('auth:sanctum', except: ['getPublicWaitingList'])
         ];
     }
 
@@ -501,51 +501,79 @@ public function Commingsoon(Request $request, $id)
      * Swap specialty order for patient with multiple appointments
      */
     public function alterSpeciality($id)
-    {
-        $user_role = Auth::user()->role_id;
-        
-        if (!in_array($user_role, [1, 4])) {
-            return response()->json(['message' => 'You are not authorized'], 403);
-        }
-
-        $appointment = Appointment::find($id);
-        if (!$appointment) {
-            return response()->json(['message' => 'No appointment found'], 404);
-        }
-
-        $patientAppointments = Appointment::where('patient_id', $appointment->patient_id)
-            ->where('id', '!=', $appointment->id)
-            ->get();
-
-        if ($patientAppointments->isEmpty()) {
-            return response()->json(['message' => 'No other appointments for this patient'], 404);
-        }
-
-        $otherAppointment = $patientAppointments->first();
-
-        $tempOrder = $appointment->orderList;
-        $appointment->orderList = $otherAppointment->orderList;
-        $otherAppointment->orderList = $tempOrder;
-
-        $tempSpecialtyOrder = $appointment->specialty_order;
-        $appointment->specialty_order = $otherAppointment->specialty_order;
-        $otherAppointment->specialty_order = $tempSpecialtyOrder;
-
-        $appointment->save();
-        $otherAppointment->save();
-
-        Log::info('Specialties swapped:', [
-            'appointment_1' => $appointment->id,
-            'appointment_2' => $otherAppointment->id,
-            'patient_id' => $appointment->patient_id
-        ]);
-
-        return response()->json([
-            'message' => 'Specialties swapped successfully',
-            'swapped_with' => $otherAppointment->id,
-        ], 200);
+{
+    $user_role = Auth::user()->role_id;
+    
+    if (!in_array($user_role, [1, 4])) {
+        return response()->json(['message' => 'You are not authorized'], 403);
     }
 
+    // Step 1: Get the appointment by ID (first appointment)
+    $appointment = Appointment::find($id);
+    if (!$appointment) {
+        return response()->json(['message' => 'No appointment found'], 404);
+    }
+    // chek if the event has more then two event_secialities
+
+    $event_id = $appointment->event_id;
+    $event_specialty_count = EventSpecialty::where('event_id', $event_id)->count();
+    if ($event_specialty_count < 2) {
+        return response()->json(['message' => 'The event does not have multiple specialties to alter'], 400);
+    }
+
+    // Step 2 & 3: Get all other appointments for the same patient
+    $patientAppointments = Appointment::where('patient_id', $appointment->patient_id)
+        ->where('id', '!=', $appointment->id)
+        ->get();
+
+    // Step 4: If patient has only one appointment, return
+    if ($patientAppointments->isEmpty()) {
+        return response()->json(['message' => 'Patient has only one appointment, cannot alter specialty'], 404);
+    }
+
+    // Step 5: Get the second appointment
+    $secondAppointment = $patientAppointments->first();
+    
+    // Step 6: Get the specialty of the second appointment
+    $secondSpecialty = $secondAppointment->event_specialty_id;
+    
+    // Step 7: Get the max orderList of appointments with same event, same specialty, and status 'present'
+    $maxOrder = Appointment::where('event_specialty_id', $secondSpecialty)
+        ->where('status', 'Present')
+        ->max('orderList');
+    
+    // Step 8 & 9: Give second appointment new orderList and change status to 'present'
+    $secondAppointment->orderList = ($maxOrder ?? 0) + 1;
+    $secondAppointment->status = 'Present';
+    $secondAppointment->save();
+    
+    // Step 10: Change first appointment status to 'waiting'
+    $appointment->status = 'Waiting';
+    $appointment->save();
+
+    Log::info('Specialty altered:', [
+        'first_appointment_id' => $appointment->id,
+        'first_appointment_status' => 'waiting',
+        'second_appointment_id' => $secondAppointment->id,
+        'second_appointment_status' => 'present',
+        'second_appointment_new_order' => $secondAppointment->orderList,
+        'patient_id' => $appointment->patient_id
+    ]);
+
+    return response()->json([
+        'message' => 'Specialty altered successfully',
+        'first_appointment' => [
+            'id' => $appointment->id,
+            'status' => $appointment->status
+        ],
+        'second_appointment' => [
+            'id' => $secondAppointment->id,
+            'status' => $secondAppointment->status,
+            'orderList' => $secondAppointment->orderList,
+            'specialty_id' => $secondAppointment->event_specialty_id
+        ]
+    ], 200);
+}
 /**
  * Mark patient as absent (didn't show up at doctor)
  * Moves to end of Present/Waiting queue
@@ -558,46 +586,34 @@ public function Absent($id)
         return response()->json(['message' => 'You are not authorized'], 403);
     }
 
-    $appointment = Appointment::with('eventSpecialty')->find($id);
+    $appointment = Appointment::find($id);
     if (!$appointment) {
         return response()->json(['message' => 'No appointment found'], 404);
     }
 
-    $eventSpecialty = $appointment->eventSpecialty;
+    $eventSpecialty = $appointment->event_specialty_id;
     
-    if ($eventSpecialty) {
-        $eventId = $eventSpecialty->event_id;
-        $specialtyId = $eventSpecialty->specialty_id;
+    // Get max from Present, Waiting, Commingsoon (not Absent, Pending, Completed)
+    $maxPosition = Appointment::where('event_specialty_id', $eventSpecialty) // Changed from whereIn
+        ->whereIn('status', ['Present', 'Waiting', 'Commingsoon'])
+        ->where('id', '!=', $id)
+        ->max('orderList');
 
-        $eventSpecialtyIds = EventSpecialty::where('event_id', $eventId)
-            ->where('specialty_id', $specialtyId)
-            ->pluck('id')
-            ->toArray();
+    // Move to end but keep status as Pending
+    $appointment->orderList = $maxPosition ? $maxPosition + 1 : 1;
+    $appointment->status = 'Pending';
+    $appointment->save();
 
-        // Get max from Present, Waiting, Commingsoon (not Absent, Pending, Completed)
-        $maxPosition = Appointment::whereIn('event_specialty_id', $eventSpecialtyIds)
-            ->whereIn('status', ['Present', 'Waiting', 'Commingsoon'])
-            ->where('id', '!=', $id)
-            ->max('orderList');
+    Log::info('Patient marked as absent and moved to end:', [
+        'appointment_id' => $id,
+        'patient_id' => $appointment->patient_id,
+        'new_orderList' => $appointment->orderList
+    ]);
 
-        // Move to end but keep status as Present
-        $appointment->orderList = $maxPosition ? $maxPosition + 1 : 1;
-        $appointment->status = 'Present'; // Still in the queue
-        $appointment->save();
-
-        Log::info('Patient marked as absent and moved to end:', [
-            'appointment_id' => $id,
-            'patient_id' => $appointment->patient_id,
-            'new_orderList' => $appointment->orderList
-        ]);
-
-        return response()->json([
-            'message' => 'Patient moved to last position',
-            'new_position' => $appointment->orderList
-        ], 200);
-    }
-
-    return response()->json(['message' => 'Could not determine event specialty'], 500);
+    return response()->json([
+        'message' => 'Patient moved to last position',
+        'new_position' => $appointment->orderList
+    ], 200);
 }
 
     /**
@@ -645,7 +661,6 @@ public function Absent($id)
             // Get ALL appointments for this specialty across ALL event_specialties
             $appointments = Appointment::with(['day', 'hour', 'eventSpecialty.specialty'])
                 ->whereIn('event_specialty_id', $eventSpecialtyIds)
-                ->whereIn('status', ['Present', 'Dilatation', 'Commingsoon', 'Waiting'])
                 ->orderBy('orderList', 'asc')
                 ->get();
 
@@ -700,4 +715,104 @@ public function Absent($id)
 
         return $this->GetWaitingListBySpeciality($event->id, $specialityId);
     }
+
+/**
+ * Get waiting list for public display (NO AUTHENTICATION REQUIRED)
+ * Returns patient info including sex field for filtering
+ * 
+ * @param Request $request
+ * @return \Illuminate\Http\JsonResponse
+ */
+public function getPublicWaitingList(Request $request)
+{
+    $eventId = $request->query('event_id') ?? $request->input('event_id');
+    
+    try {
+        if (!$eventId) {
+            return response()->json([
+                'message' => 'No event ID provided',
+                'data' => []
+            ], 400);
+        }
+
+        // Find event
+        $event = Event::find($eventId);
+        
+        if (!$event) {
+            return response()->json([
+                'message' => 'Event not found',
+                'data' => [],
+                'event' => null
+            ], 404);
+        }
+
+        // Get appointments using DB query - includes sex field
+        $results = DB::table('appointments')
+            ->join('event_specialties', 'appointments.event_specialty_id', '=', 'event_specialties.id')
+            ->join('specialties', 'event_specialties.specialty_id', '=', 'specialties.id')
+            ->where('event_specialties.event_id', $eventId)
+            ->where('appointments.status', 'Present')
+            ->select(
+                'appointments.patient_id',
+                'appointments.full_name',
+                'appointments.sex',           // Include sex field
+                'appointments.orderList',
+                'specialties.id as specialty_id',
+                'specialties.name as specialty_name'
+            )
+            ->orderBy('specialties.id')
+            ->orderBy('appointments.orderList')
+            ->get();
+
+        // Group by specialty and take first 10
+        $grouped = [];
+        foreach ($results as $row) {
+            $specialtyId = $row->specialty_id;
+            
+            if (!isset($grouped[$specialtyId])) {
+                $grouped[$specialtyId] = [];
+            }
+            
+            // Only take first 10 per specialty
+            if (count($grouped[$specialtyId]) < 10) {
+                $grouped[$specialtyId][] = [
+                    'patient_id' => $row->patient_id,
+                    'full_name' => $row->full_name,
+                    'sex' => $row->sex,          // Include sex in response
+                    'order' => $row->orderList ?? 0,
+                    'position' => count($grouped[$specialtyId]) + 1,
+                    'is_priority' => ($row->orderList ?? 0) === 0,
+                    'status' => 'Present'
+                ];
+            }
+        }
+
+        // Return response
+        return response()->json([
+            'data' => $grouped,
+            'event' => [
+                'id' => $event->id,
+                'name' => $event->name,
+                'is_current' => isset($event->is_current) ? (bool)$event->is_current : false
+            ],
+            'timestamp' => now()->toIso8601String(),
+            'total_patients' => count($results),
+            'specialties_count' => count($grouped)
+        ], 200);
+
+    } catch (\Exception $e) {
+        Log::error('Error in getPublicWaitingList: ' . $e->getMessage(), [
+            'event_id' => $eventId ?? null,
+            'line' => $e->getLine(),
+            'file' => $e->getFile()
+        ]);
+
+        return response()->json([
+            'message' => 'Server error',
+            'error' => config('app.debug') ? $e->getMessage() : 'Internal server error',
+            'data' => []
+        ], 500);
+    }
+}
+
 }

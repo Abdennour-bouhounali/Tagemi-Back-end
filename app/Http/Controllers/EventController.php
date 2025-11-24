@@ -411,11 +411,18 @@ public function getAppointmentDistribution($id)
             $distribution[] = $specialtyData;
         }
 
+        // Count total unique patients for this event
+        $totalPatients = \App\Models\Appointment::where('event_id', $id)
+            ->whereNotNull('patient_id')
+            ->distinct()
+            ->count('patient_id');
+
         // Overall event statistics
         $eventStatistics = [
             'total_appointments' => array_sum(array_column($distribution, 'total_appointments')),
             'total_capacity' => array_sum(array_column($distribution, 'total_capacity')),
             'total_available' => array_sum(array_column($distribution, 'total_capacity')) - array_sum(array_column($distribution, 'total_appointments')),
+            'total_patients' => $totalPatients,
             'percentage_full' => 0
         ];
 
@@ -456,7 +463,6 @@ public function getAppointmentDistribution($id)
         ], 500);
     }
 }
-
 /**
  * Helper method to determine hour status
  */
@@ -1123,237 +1129,299 @@ public function index()
     ]);
     }
 
-    /**
-     * Update full event with specialties, days, and hours
-     */
-    public function updateFull(Request $request, $id)
-    {
-        $validator = Validator::make($request->all(), [
-            'name' => 'required|string|max:255',
-            'date' => 'required|date',
-            'state' => 'nullable|string|max:255',
-            'city' => 'nullable|string|max:255',
-            'description' => 'nullable|string',
-            'is_active' => 'nullable|boolean',
-            'is_tawat' => 'nullable|boolean',
-            'nbr_of_allowed_specialties' => 'nullable|integer|min:1|max:5', // ADD THIS
-            'rules_ids' => 'nullable|array', // ADD THIS
-            'rules_ids.*' => 'integer|exists:rules,id', // ADD THIS
-            'specialties' => 'nullable|array',
-            'specialties.*.id' => 'required|exists:specialties,id',
-            'specialties.*.eventSpecialtyId' => 'nullable|integer',
-            'specialties.*.doctors' => 'nullable|array',
-            'specialties.*.doctors.*' => 'exists:doctors,id',
-            'specialties.*.is_saturated' => 'nullable|boolean',
-            'specialties.*.days' => 'required|array|min:1',
-            'specialties.*.days.*.id' => 'nullable|integer',
-            'specialties.*.days.*.day_date' => 'required|date',
-            'specialties.*.days.*.number_per_hour' => 'required|integer|min:1|max:400',
-            'specialties.*.days.*.hours' => 'required|array|min:1',
-            'specialties.*.days.*.hours.*.id' => 'nullable|integer',
-            'specialties.*.days.*.hours.*.time' => 'required|date_format:H:i:s',
-            'specialties.*.description' => 'nullable|string|max:500',
+ /**
+ * Update full event with specialties, days, and hours
+ * 
+ * This method handles:
+ * - Updating existing items (with IDs)
+ * - Creating new items (without IDs or null IDs)
+ * - Deleting items not in the payload
+ */
+public function updateFull(Request $request, $id)
+{
+    $validator = Validator::make($request->all(), [
+        'name' => 'required|string|max:255',
+        'date' => 'required|date',
+        'state' => 'nullable|string|max:255',
+        'city' => 'nullable|string|max:255',
+        'description' => 'nullable|string',
+        'is_active' => 'nullable|boolean',
+        'is_tawat' => 'nullable|boolean',
+        'nbr_of_allowed_specialties' => 'nullable|integer|min:1|max:5',
+        'rules_ids' => 'nullable|array',
+        'rules_ids.*' => 'integer|exists:rules,id',
+        'specialties' => 'nullable|array',
+        'specialties.*.id' => 'required|exists:specialties,id',
+        'specialties.*.eventSpecialtyId' => 'nullable|integer',
+        'specialties.*.description' => 'nullable|string|max:500',
+        'specialties.*.doctors' => 'nullable|array',
+        'specialties.*.doctors.*' => 'exists:doctors,id',
+        'specialties.*.is_saturated' => 'nullable|boolean',
+        'specialties.*.days' => 'required|array|min:1',
+        'specialties.*.days.*.id' => 'nullable|integer',
+        'specialties.*.days.*.day_date' => 'required|date',
+        'specialties.*.days.*.number_per_hour' => 'required|integer|min:1|max:400',
+        'specialties.*.days.*.hours' => 'required|array|min:1',
+        'specialties.*.days.*.hours.*.id' => 'nullable|integer',
+        'specialties.*.days.*.hours.*.time' => 'required|date_format:H:i:s',
+    ]);
+
+    if ($validator->fails()) {
+        return response()->json([
+            'message' => 'فشل التحقق من البيانات',
+            'errors' => $validator->errors()
+        ], 422);
+    }
+
+    DB::beginTransaction();
+    try {
+        $event = Event::findOrFail($id);
+        
+        // Update basic event information
+        $event->update([
+            'name' => $request->name,
+            'date' => $request->date,
+            'state' => $request->state,
+            'city' => $request->city,
+            'description' => $request->description,
+            'nbr_of_allowed_specialties' => $request->nbr_of_allowed_specialties ?? $event->nbr_of_allowed_specialties,
+            'rules_ids' => $request->rules_ids ?? [],
+            'is_active' => $request->is_active ?? $event->is_active,
+            'is_tawat' => $request->is_tawat ?? $event->is_tawat,
         ]);
 
-        if ($validator->fails()) {
-            return response()->json([
-                'message' => 'فشل التحقق من البيانات',
-                'errors' => $validator->errors()
-            ], 422);
-        }
-
-        DB::beginTransaction();
-        try {
-            $event = Event::findOrFail($id);
+        if ($request->has('specialties')) {
+            $processedEventSpecialtyIds = [];
             
-            $event->update([
-                'name' => $request->name,
-                'date' => $request->date,
-                'state' => $request->state,
-                'city' => $request->city,
-                'description' => $request->description,
-                'nbr_of_allowed_specialties' => $request->nbr_of_allowed_specialties ?? $event->nbr_of_allowed_specialties,
-                'rules_ids' => $request->rules_ids ?? $event->rules_ids, // ADD THIS
-                'is_active' => $request->is_active ?? $event->is_active,
-                'is_tawat' => $request->is_tawat ?? $event->is_tawat,
-            ]);
-
-            if ($request->has('specialties')) {
-                $existingEventSpecialtyIds = [];
+            foreach ($request->specialties as $specData) {
+                $isSaturated = $specData['is_saturated'] ?? false;
                 
-                foreach ($request->specialties as $specData) {
-                    $isSaturated = $specData['is_saturated'] ?? false;
+                // Check if this is an existing event_specialty or a new one
+                if (!empty($specData['eventSpecialtyId'])) {
+                    // UPDATE EXISTING EVENT_SPECIALTY
+                    $eventSpecialty = EventSpecialty::where('id', $specData['eventSpecialtyId'])
+                        ->where('event_id', $event->id)
+                        ->first();
                     
-                    if (isset($specData['eventSpecialtyId']) && $specData['eventSpecialtyId']) {
-                        $eventSpecialty = EventSpecialty::find($specData['eventSpecialtyId']);
-                        
-                        if ($eventSpecialty && $eventSpecialty->event_id == $event->id) {
-                            $eventSpecialty->update([
-                                'specialty_id' => $specData['id'],
-                                'description' => $specData['description'] ?? null, // ADD THIS
-                                'is_saturated' => $isSaturated,
-                            ]);
-                            
-                            $existingEventSpecialtyIds[] = $eventSpecialty->id;
-                        } else {
-                            $eventSpecialty = EventSpecialty::create([
-                                'event_id' => $event->id,
-                                'specialty_id' => $specData['id'],
-                                'description' => $specData['description'] ?? null, // ADD THIS
-                                'is_saturated' => $isSaturated,
-                                'max_number' => 100,
-                                'start_time' => '08:00:00',
-                                'addition_capacity' => 0,
-                                'flag' => 'Open',
-                                'is_active' => true,
-                            ]);
-                            
-                            $existingEventSpecialtyIds[] = $eventSpecialty->id;
-                        }
-                    } else {
-                        $eventSpecialty = EventSpecialty::create([
-                            'event_id' => $event->id,
+                    if ($eventSpecialty) {
+                        $eventSpecialty->update([
                             'specialty_id' => $specData['id'],
+                            'description' => $specData['description'] ?? '',
                             'is_saturated' => $isSaturated,
-                            'max_number' => 100,
-                            'start_time' => '08:00:00',
-                            'addition_capacity' => 0,
-                            'flag' => 'Open',
-                            'is_active' => true,
                         ]);
                         
-                        $existingEventSpecialtyIds[] = $eventSpecialty->id;
+                        Log::info("Updated EventSpecialty ID: {$eventSpecialty->id}");
+                    } else {
+                        Log::warning("EventSpecialty ID {$specData['eventSpecialtyId']} not found, creating new one");
+                        $eventSpecialty = $this->createEventSpecialty($event->id, $specData, $isSaturated);
                     }
+                } else {
+                    // CREATE NEW EVENT_SPECIALTY
+                    $eventSpecialty = $this->createEventSpecialty($event->id, $specData, $isSaturated);
+                    Log::info("Created new EventSpecialty ID: {$eventSpecialty->id}");
+                }
+                
+                $processedEventSpecialtyIds[] = $eventSpecialty->id;
+                
+                // Sync doctors
+                if (isset($specData['doctors'])) {
+                    $eventSpecialty->doctors()->sync($specData['doctors']);
+                }
+                
+                // Process Days
+                $processedDayIds = [];
+                
+                foreach ($specData['days'] as $dayData) {
+                    $numberPerHour = $dayData['number_per_hour'] ?? 20;
                     
-                    if (isset($specData['doctors'])) {
-                        $eventSpecialty->doctors()->sync($specData['doctors']);
-                    }
-                    
-                    // Process days
-                    $existingDayIds = [];
-                    
-                    foreach ($specData['days'] as $dayData) {
-                        $numberPerHour = $dayData['number_per_hour'] ?? 6;
+                    // Check if this is an existing day or a new one
+                    if (!empty($dayData['id'])) {
+                        // UPDATE EXISTING DAY
+                        $day = Day::where('id', $dayData['id'])
+                            ->where('event_specialty_id', $eventSpecialty->id)
+                            ->first();
                         
-                        if (isset($dayData['id']) && $dayData['id']) {
-                            $day = Day::find($dayData['id']);
+                        if ($day) {
+                            $day->update([
+                                'day_date' => $dayData['day_date'],
+                                'number_per_hour' => $numberPerHour,
+                            ]);
                             
-                            if ($day && $day->event_specialty_id == $eventSpecialty->id) {
-                                $day->update([
-                                    'day_date' => $dayData['day_date'],
-                                    'number_per_hour' => $numberPerHour,
-                                ]);
-                                
-                                // Update all hours' max_allowed for this day
-                                Hour::where('day_id', $day->id)
-                                    ->update(['max_allowed' => $numberPerHour]);
-                                
-                                $existingDayIds[] = $day->id;
-                            } else {
-                                $day = Day::create([
-                                    'event_specialty_id' => $eventSpecialty->id,
-                                    'day_date' => $dayData['day_date'],
-                                    'number_per_hour' => $numberPerHour,
-                                ]);
-                                
-                                $existingDayIds[] = $day->id;
-                            }
+                            Log::info("Updated Day ID: {$day->id}");
                         } else {
+                            Log::warning("Day ID {$dayData['id']} not found, creating new one");
                             $day = Day::create([
                                 'event_specialty_id' => $eventSpecialty->id,
                                 'day_date' => $dayData['day_date'],
                                 'number_per_hour' => $numberPerHour,
                             ]);
-                            
-                            $existingDayIds[] = $day->id;
+                            Log::info("Created new Day ID: {$day->id}");
                         }
-                        
-                        // Process hours
-                        $existingHourIds = [];
-                        $hoursToInsert = [];
-                        
-                        foreach ($dayData['hours'] as $hourData) {
-                            if (isset($hourData['id']) && $hourData['id']) {
-                                $hour = Hour::find($hourData['id']);
-                                
-                                if ($hour && $hour->day_id == $day->id) {
-                                    $hour->update([
-                                        'max_allowed' => $numberPerHour
-                                    ]);
-                                    $existingHourIds[] = $hour->id;
-                                } else {
-                                    $hoursToInsert[] = [
-                                        'day_id' => $day->id,
-                                        'time' => $hourData['time'],
-                                        'max_allowed' => $numberPerHour,
-                                        'counter' => 0,
-                                        'created_at' => now(),
-                                        'updated_at' => now(),
-                                    ];
-                                }
-                            } else {
-                                if (!in_array($hourData['time'], array_column($hoursToInsert, 'time'))) {
-                                    $hoursToInsert[] = [
-                                        'day_id' => $day->id,
-                                        'time' => $hourData['time'],
-                                        'max_allowed' => $numberPerHour,
-                                        'counter' => 0,
-                                        'created_at' => now(),
-                                        'updated_at' => now(),
-                                    ];
-                                }
-                            }
-                        }
-                        
-                        if (!empty($hoursToInsert)) {
-                            Hour::insert($hoursToInsert);
-                        }
-                        
-                        Hour::where('day_id', $day->id)
-                            ->whereNotIn('id', $existingHourIds)
-                            ->where('id', '>', 0)
-                            ->delete();
+                    } else {
+                        // CREATE NEW DAY
+                        $day = Day::create([
+                            'event_specialty_id' => $eventSpecialty->id,
+                            'day_date' => $dayData['day_date'],
+                            'number_per_hour' => $numberPerHour,
+                        ]);
+                        Log::info("Created new Day ID: {$day->id}");
                     }
                     
-                    Day::where('event_specialty_id', $eventSpecialty->id)
-                        ->whereNotIn('id', $existingDayIds)
-                        ->delete();
+                    $processedDayIds[] = $day->id;
+                    
+                    // ============================================
+                    // ✅ HOUR PROCESSING WITH WORKING DELETION
+                    // ============================================
+                    
+                    /**
+                     * Helper function to normalize time to HH:MM:SS format
+                     */
+                    $normalizeTime = function($time) {
+                        // Handle Carbon objects, DateTime, or strings
+                        if (is_object($time) && method_exists($time, 'format')) {
+                            return $time->format('H:i:s');
+                        }
+                        // Handle string times
+                        $timestamp = strtotime($time);
+                        if ($timestamp === false) {
+                            return $time; // Return as-is if can't parse
+                        }
+                        return date('H:i:s', $timestamp);
+                    };
+                    
+                    // Build array of times that should exist (normalized)
+                    $desiredHourTimes = array_map(function($h) use ($normalizeTime) {
+                        return $normalizeTime($h['time']);
+                    }, $dayData['hours']);
+                    
+                    // Get all existing hours for this day
+                    $existingHours = Hour::where('day_id', $day->id)->get();
+                    
+                    // Create a map of normalized time => hour for quick lookup
+                    $existingHoursByTime = [];
+                    foreach ($existingHours as $hour) {
+                        $normalizedTime = $normalizeTime($hour->time);
+                        $existingHoursByTime[$normalizedTime] = $hour;
+                    }
+                    
+                    // Track IDs of hours we want to KEEP
+                    $hourIdsToKeep = [];
+                    
+                    // Process each hour from the payload
+                    foreach ($dayData['hours'] as $hourData) {
+                        $time = $normalizeTime($hourData['time']);
+                        
+                        if (isset($existingHoursByTime[$time])) {
+                            // Hour exists, just update max_allowed
+                            $existingHoursByTime[$time]->update([
+                                'max_allowed' => $numberPerHour
+                            ]);
+                            Log::info("Updated Hour ID: {$existingHoursByTime[$time]->id}, Time: {$time}");
+                            
+                            // ✅ KEEP THIS HOUR
+                            $hourIdsToKeep[] = $existingHoursByTime[$time]->id;
+                        } else {
+                            // Hour doesn't exist, create it
+                            $newHour = Hour::create([
+                                'day_id' => $day->id,
+                                'time' => $time,
+                                'max_allowed' => $numberPerHour,
+                                'counter' => 0,
+                            ]);
+                            Log::info("Created new Hour ID: {$newHour->id}, Time: {$time}");
+                            
+                            // ✅ KEEP THIS HOUR
+                            $hourIdsToKeep[] = $newHour->id;
+                        }
+                    }
+                    
+                    // ✅ DELETE hours that are NOT in the keep list
+                    if (count($hourIdsToKeep) > 0) {
+                        $deletedCount = Hour::where('day_id', $day->id)
+                            ->whereNotIn('id', $hourIdsToKeep)
+                            ->delete();
+                    } else {
+                        // If no hours to keep, delete all (safety check)
+                        $deletedCount = Hour::where('day_id', $day->id)->delete();
+                    }
+                    
+                    if ($deletedCount > 0) {
+                        Log::info("Deleted {$deletedCount} obsolete hours from Day ID: {$day->id}");
+                    }
+                    
+                    // ============================================
+                    // END of Hour Processing
+                    // ============================================
                 }
                 
-                EventSpecialty::where('event_id', $event->id)
-                    ->whereNotIn('id', $existingEventSpecialtyIds)
+                // Delete days not in the payload
+                $deletedDays = Day::where('event_specialty_id', $eventSpecialty->id)
+                    ->whereNotIn('id', $processedDayIds)
                     ->delete();
+                
+                if ($deletedDays > 0) {
+                    Log::info("Deleted {$deletedDays} days from EventSpecialty ID: {$eventSpecialty->id}");
+                }
             }
-
-            DB::commit();
-
-            $event->load([
-                'eventSpecialties.specialty',
-                'eventSpecialties.doctors',
-                'eventSpecialties.days.hours',
-            ]);
-
-            return response()->json([
-                'message' => 'تم تحديث الحدث بنجاح',
-                'event' => $event
-            ], 200);
-
-        } catch (\Exception $e) {
-            DB::rollBack();
             
-            Log::error('Event update failed', [
-                'event_id' => $id,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-            ]);
-
-            return response()->json([
-                'message' => 'حدث خطأ أثناء تحديث الحدث',
-                'error' => config('app.debug') ? $e->getMessage() : 'خطأ داخلي في الخادم'
-            ], 500);
+            // Delete event_specialties not in the payload
+            $deletedEventSpecialties = EventSpecialty::where('event_id', $event->id)
+                ->whereNotIn('id', $processedEventSpecialtyIds)
+                ->delete();
+            
+            if ($deletedEventSpecialties > 0) {
+                Log::info("Deleted {$deletedEventSpecialties} event specialties from Event ID: {$event->id}");
+            }
         }
-    }
 
+        DB::commit();
+
+        // Reload relationships
+        $event->load([
+            'eventSpecialties.specialty',
+            'eventSpecialties.doctors',
+            'eventSpecialties.days.hours',
+        ]);
+
+        return response()->json([
+            'message' => 'تم تحديث الحدث بنجاح',
+            'event' => $event
+        ], 200);
+
+    } catch (\Exception $e) {
+        DB::rollBack();
+        
+        Log::error('Event update failed', [
+            'event_id' => $id,
+            'error' => $e->getMessage(),
+            'trace' => $e->getTraceAsString(),
+            'request_data' => $request->all()
+        ]);
+
+        return response()->json([
+            'message' => 'حدث خطأ أثناء تحديث الحدث',
+            'error' => config('app.debug') ? $e->getMessage() : 'خطأ داخلي في الخادم'
+        ], 500);
+    }
+}
+
+/**
+ * Helper method to create a new EventSpecialty
+ */
+private function createEventSpecialty($eventId, $specData, $isSaturated)
+{
+    return EventSpecialty::create([
+        'event_id' => $eventId,
+        'specialty_id' => $specData['id'],
+        'description' => $specData['description'] ?? '',
+        'is_saturated' => $isSaturated,
+        'max_number' => 100,
+        'start_time' => '08:00:00',
+        'addition_capacity' => 0,
+        'flag' => 'Open',
+        'is_active' => true,
+    ]);
+}
     /**
      * Toggle event active status
      */

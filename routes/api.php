@@ -70,6 +70,13 @@ Route::get('/public/events/{id}', [EventController::class, 'show']);
 Route::get('/public/events/{id}/specialties', [EventController::class, 'getSpecialties']);
 
 Route::middleware('auth:sanctum')->group(function () {
+    Route::delete('/contacts/{id}', [ContactController::class, 'destroy']);
+    Route::patch('/contacts/{id}/toggle-treated', [ContactController::class, 'toggleTreated']);
+    Route::patch('/contacts/{id}/mark-treated', [ContactController::class, 'markAsTreated']);
+    Route::patch('/contacts/{id}/mark-untreated', [ContactController::class, 'markAsUntreated']);
+    Route::get('/contacts/statistics', [ContactController::class, 'getStatistics']);
+
+
 // Auth user info with event and specialties
 Route::get('/user', function(Request $request) {
     $user = $request->user();
@@ -155,6 +162,7 @@ Route::get('/user', function(Request $request) {
     Route::patch('/appointments/{id}/presence', [AppointmentController::class, 'updatePresence']);
     Route::put('/appointments/{id}', [AppointmentController::class, 'update']);
     Route::patch('/appointments/{id}', [AppointmentController::class, 'update']); // Also support PATCH
+    Route::get('/appointment/patient-appointments/{patientId}/{eventId}', [AppointmentController::class, 'getPatientAppointments']);
 
     
     // Appointment queries
@@ -180,7 +188,10 @@ Route::get('/user', function(Request $request) {
     Route::post('waitinglist/Commingsoon/{id}', [WaitingListController::class, 'Commingsoon']);
     Route::post('waitinglist/FinishedDilatation/{id}', [WaitingListController::class, 'FinishedDilatation']);
     Route::post('waitinglist/deleteAppointmentsAndAdmins', [WaitingListController::class, 'deleteAppointmentsAndAdmins']);
-    Route::post('waitinglist/alterSpeciality/{id}', [WaitingListController::class, 'alterSpeciality']);
+    Route::post('/waitinglist/alterSpeciality/{id}', [WaitingListController::class, 'alterSpeciality']);
+    Route::get('waitinglist/version/{eventId}/{specialityId}', [WaitingListController::class, 'getWaitingListVersion']);
+    
+
     
     // Generic resource routes LAST
     Route::apiResource('waitinglist', WaitingListController::class);
@@ -246,6 +257,7 @@ Route::get('/user', function(Request $request) {
     Route::post('/DisplayHideAuth', [UsefulController::class, 'DisplayHideAuth']);
     Route::get('/getstartDay', [UsefulController::class, 'getstartDay']);
 });
+Route::apiResource('rules', RuleController::class);
 Route::middleware('auth:sanctum')->get('/getdisplayAuth', [UserController::class, 'getdisplayAuth']);
 Route::apiResource('types', TypeController::class);
 
@@ -298,5 +310,6 @@ Route::prefix('activities')->group(function () {
         Route::post('/{id}/reorder-media', [ActivityController::class, 'reorderMedia']);
     });
 });
+Route::get('/public/waitinglist', [WaitingListController::class, 'getPublicWaitingList']);
 
 

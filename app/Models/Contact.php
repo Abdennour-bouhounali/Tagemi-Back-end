@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Model;
 class Contact extends Model
 {
     use HasFactory;
+
     protected $fillable = [
         'first_name',
         'last_name',
@@ -15,6 +16,13 @@ class Contact extends Model
         'message',
         'state',
         'commun',
-        'type_message'
+        'type_message',
+        'treated',
+        'treated_at'
+    ];
+
+    protected $casts = [
+        'treated' => 'boolean',
+        'treated_at' => 'datetime',
     ];
 }

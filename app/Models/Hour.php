@@ -14,10 +14,6 @@ class Hour extends Model
         'counter',
     ];
 
-    protected $casts = [
-        'time' => 'datetime:H:i:s',
-    ];
-
     public function day()
     {
         return $this->belongsTo(Day::class);
