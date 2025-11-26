@@ -18,9 +18,10 @@ use Illuminate\Routing\Controllers\HasMiddleware;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
-
 class AppointmentController extends Controller implements HasMiddleware
 {
+    const TEST_EVENT_ID = 2;
+
     public static function middleware()
     {
         return [
@@ -1697,5 +1698,1090 @@ public function getPatientAppointments($patientId, $eventId)
             'error' => $e->getMessage()
         ], 500);
     }
+}
+
+
+
+
+
+
+
+
+    public function getAvailableSpecialties($id)
+{
+    try {
+        $user = Auth::user();
+        
+        if (!in_array($user->role_id, [1, 3])) {
+            return response()->json([
+                'message' => 'غير مصرح لك بهذا الإجراء'
+            ], 403);
+        }
+
+        $appointment = Appointment::with(['eventSpecialty.specialty'])->find($id);
+        
+        if (!$appointment) {
+            return response()->json([
+                'message' => 'الموعد غير موجود'
+            ], 404);
+        }
+
+        $eventId = $appointment->event_id;
+        $currentSpecialtyId = $appointment->event_specialty_id;
+
+        // Get all non-saturated event specialties for this event (excluding current)
+        $availableSpecialties = EventSpecialty::with(['specialty', 'days' => function($query) {
+                $query->where('day_date', '>=', now()->toDateString())
+                      ->orderBy('day_date', 'asc')
+                      ->with(['hours' => function($q) {
+                          $q->whereRaw('counter < max_allowed')
+                            ->orderBy('time', 'asc');
+                      }]);
+            }])
+            ->where('event_id', $eventId)
+            ->where('id', '!=', $currentSpecialtyId)
+            ->where('is_saturated', false)
+            ->where('is_active', true)
+            ->get()
+            ->map(function($eventSpecialty) {
+                $totalAvailable = 0;
+                $closestSlot = null;
+                $closestDateTime = null;
+
+                foreach ($eventSpecialty->days as $day) {
+                    foreach ($day->hours as $hour) {
+                        $available = $hour->max_allowed - $hour->counter;
+                        if ($available > 0) {
+                            $totalAvailable += $available;
+                            
+                            // Create datetime for comparison
+                            $slotDateTime = $day->day_date . ' ' . $hour->time;
+                            
+                            if (!$closestDateTime || $slotDateTime < $closestDateTime) {
+                                $closestDateTime = $slotDateTime;
+                                $closestSlot = [
+                                    'day_id' => $day->id,
+                                    'day_date' => $day->day_date,
+                                    'hour_id' => $hour->id,
+                                    'time' => $hour->time,
+                                    'available' => $available
+                                ];
+                            }
+                        }
+                    }
+                }
+
+                return [
+                    'event_specialty_id' => $eventSpecialty->id,
+                    'specialty_id' => $eventSpecialty->specialty_id,
+                    'specialty_name' => $eventSpecialty->specialty->name,
+                    'total_available_slots' => $totalAvailable,
+                    'closest_slot' => $closestSlot,
+                ];
+            })
+            ->filter(function($specialty) {
+                return $specialty['total_available_slots'] > 0 && $specialty['closest_slot'] !== null;
+            })
+            ->values();
+
+        return response()->json([
+            'current_appointment' => [
+                'id' => $appointment->id,
+                'patient_id' => $appointment->patient_id,
+                'full_name' => $appointment->full_name,
+                'current_specialty' => $appointment->eventSpecialty->specialty->name,
+            ],
+            'available_specialties' => $availableSpecialties
+        ], 200);
+
+    } catch (\Exception $e) {
+        Log::error('Get available specialties error:', [
+            'appointment_id' => $id,
+            'error' => $e->getMessage(),
+            'trace' => $e->getTraceAsString()
+        ]);
+        
+        return response()->json([
+            'message' => 'حدث خطأ أثناء جلب التخصصات المتاحة',
+            'error' => config('app.debug') ? $e->getMessage() : 'خطأ داخلي'
+        ], 500);
+    }
+}
+
+/**
+ * Transfer appointment to another specialty
+ * POST /api/appointments/{id}/transfer-specialty
+ */
+public function transferSpecialty(Request $request, $id)
+{
+    try {
+        $user = Auth::user();
+        
+        // Only super admin (1) and specialty admin (3) can transfer
+        if (!in_array($user->role_id, [1, 3])) {
+            return response()->json([
+                'message' => 'غير مصرح لك بهذا الإجراء'
+            ], 403);
+        }
+
+        $validated = $request->validate([
+            'new_event_specialty_id' => 'required|exists:event_specialties,id',
+            'use_closest_slot' => 'boolean',
+            'day_id' => 'nullable|exists:days,id',
+            'hour_id' => 'nullable|exists:hours,id',
+        ]);
+
+        DB::beginTransaction();
+
+        $appointment = Appointment::with(['eventSpecialty.specialty', 'hour'])->lockForUpdate()->find($id);
+        
+        if (!$appointment) {
+            DB::rollBack();
+            return response()->json([
+                'message' => 'الموعد غير موجود'
+            ], 404);
+        }
+
+        $oldEventSpecialtyId = $appointment->event_specialty_id;
+        $oldHourId = $appointment->hour_id;
+        
+        // Get new event specialty
+        $newEventSpecialty = EventSpecialty::with('specialty')->find($validated['new_event_specialty_id']);
+        
+        if (!$newEventSpecialty) {
+            DB::rollBack();
+            return response()->json([
+                'message' => 'التخصص الجديد غير موجود'
+            ], 404);
+        }
+
+        // Verify same event
+        if ($newEventSpecialty->event_id != $appointment->event_id) {
+            DB::rollBack();
+            return response()->json([
+                'message' => 'التخصص لا ينتمي لنفس الحدث'
+            ], 422);
+        }
+
+        // Check if saturated
+        if ($newEventSpecialty->is_saturated) {
+            DB::rollBack();
+            return response()->json([
+                'message' => 'التخصص المختار ممتلئ'
+            ], 409);
+        }
+
+        // Find slot to assign
+        $newDayId = null;
+        $newHourId = null;
+
+        if ($validated['use_closest_slot'] ?? true) {
+            // Find closest available slot
+            $closestSlot = $this->findClosestAvailableSlot($newEventSpecialty->id);
+            
+            if (!$closestSlot) {
+                DB::rollBack();
+                return response()->json([
+                    'message' => 'لا توجد مواعيد متاحة في التخصص المختار'
+                ], 409);
+            }
+            
+            $newDayId = $closestSlot['day_id'];
+            $newHourId = $closestSlot['hour_id'];
+        } else {
+            // Use provided day and hour
+            if (!isset($validated['day_id']) || !isset($validated['hour_id'])) {
+                DB::rollBack();
+                return response()->json([
+                    'message' => 'يجب تحديد اليوم والساعة'
+                ], 422);
+            }
+            
+            $newDayId = $validated['day_id'];
+            $newHourId = $validated['hour_id'];
+            
+            // Verify day belongs to new specialty
+            $dayExists = Day::where('id', $newDayId)
+                ->where('event_specialty_id', $newEventSpecialty->id)
+                ->exists();
+                
+            if (!$dayExists) {
+                DB::rollBack();
+                return response()->json([
+                    'message' => 'اليوم المختار غير صالح لهذا التخصص'
+                ], 422);
+            }
+            
+            // Verify hour belongs to day and has space
+            $newHour = Hour::where('id', $newHourId)
+                ->where('day_id', $newDayId)
+                ->lockForUpdate()
+                ->first();
+                
+            if (!$newHour) {
+                DB::rollBack();
+                return response()->json([
+                    'message' => 'الساعة المختارة غير صالحة'
+                ], 422);
+            }
+            
+            if ($newHour->counter >= $newHour->max_allowed) {
+                DB::rollBack();
+                return response()->json([
+                    'message' => 'الساعة المختارة ممتلئة'
+                ], 409);
+            }
+        }
+
+        // Decrement counter on old hour
+        $oldHour = Hour::lockForUpdate()->find($oldHourId);
+        if ($oldHour && $oldHour->counter > 0) {
+            $oldHour->decrement('counter');
+            Log::info('Old hour counter decremented:', [
+                'hour_id' => $oldHour->id,
+                'new_counter' => $oldHour->counter
+            ]);
+        }
+
+        // Increment counter on new hour
+        $newHour = Hour::lockForUpdate()->find($newHourId);
+        if ($newHour) {
+            $newHour->increment('counter');
+            Log::info('New hour counter incremented:', [
+                'hour_id' => $newHour->id,
+                'new_counter' => $newHour->counter
+            ]);
+        }
+
+        // Get max orderList for Present appointments in new specialty
+        $maxOrderList = Appointment::where('event_specialty_id', $newEventSpecialty->id)
+            ->whereIn('status', ['Present', 'Waiting', 'Commingsoon'])
+            ->max('orderList');
+        
+        $newOrderList = $maxOrderList ? $maxOrderList + 1 : 1;
+
+        // Update appointment
+        $oldSpecialtyName = $appointment->eventSpecialty->specialty->name;
+        
+        $appointment->event_specialty_id = $newEventSpecialty->id;
+        $appointment->day_id = $newDayId;
+        $appointment->hour_id = $newHourId;
+        $appointment->status = 'Present';
+        $appointment->orderList = $newOrderList;
+        $appointment->position = $newHour->counter;
+        
+        // Get doctor for new specialty
+        $newDoctor = $newEventSpecialty->doctors()->first();
+        $appointment->doctor_id = $newDoctor ? $newDoctor->id : null;
+        
+        $appointment->save();
+
+        // Check saturation on both old and new specialties
+        $oldEventSpecialty = EventSpecialty::find($oldEventSpecialtyId);
+        if ($oldEventSpecialty) {
+            $this->checkAndRemoveSaturation($oldEventSpecialty);
+        }
+        
+        $this->checkAndUpdateSaturation($newEventSpecialty);
+
+        DB::commit();
+
+        // Reload appointment with relationships
+        $appointment->load([
+            'eventSpecialty.specialty',
+            'day',
+            'hour',
+            'doctor'
+        ]);
+
+        Log::info('Appointment specialty transferred:', [
+            'appointment_id' => $id,
+            'patient_id' => $appointment->patient_id,
+            'from_specialty' => $oldSpecialtyName,
+            'to_specialty' => $newEventSpecialty->specialty->name,
+            'new_orderList' => $newOrderList,
+            'transferred_by' => $user->id
+        ]);
+
+        return response()->json([
+            'message' => sprintf(
+                'تم نقل الموعد من %s إلى %s بنجاح',
+                $oldSpecialtyName,
+                $newEventSpecialty->specialty->name
+            ),
+            'appointment' => $appointment,
+            'old_specialty' => $oldSpecialtyName,
+            'new_specialty' => $newEventSpecialty->specialty->name,
+            'new_orderList' => $newOrderList
+        ], 200);
+
+    } catch (\Illuminate\Validation\ValidationException $e) {
+        return response()->json([
+            'message' => 'خطأ في البيانات المدخلة',
+            'errors' => $e->errors()
+        ], 422);
+    } catch (\Exception $e) {
+        DB::rollBack();
+        
+        Log::error('Transfer specialty error:', [
+            'appointment_id' => $id,
+            'error' => $e->getMessage(),
+            'trace' => $e->getTraceAsString()
+        ]);
+        
+        return response()->json([
+            'message' => 'حدث خطأ أثناء نقل الموعد',
+            'error' => config('app.debug') ? $e->getMessage() : 'خطأ داخلي'
+        ], 500);
+    }
+}
+    /**
+     * Find the closest available time slot for a specialty
+     */
+    private function findClosestAvailableSlot($eventSpecialtyId)
+    {
+        $now = now();
+        
+        // Explicitly join days table to access day_date in ORDER BY
+        $slot = Hour::join('days', 'hours.day_id', '=', 'days.id')
+            ->where('days.event_specialty_id', $eventSpecialtyId)
+            ->where('days.day_date', '>=', $now->toDateString())
+            ->whereRaw('hours.counter < hours.max_allowed')
+            ->orderByRaw("CONCAT(days.day_date, ' ', hours.time) ASC")
+            ->select(
+                'hours.id',
+                'hours.day_id', 
+                'hours.time',
+                'hours.max_allowed',
+                'hours.counter',
+                'days.day_date'
+            )
+            ->first();
+        
+        if (!$slot) {
+            return null;
+        }
+        
+        return [
+            'day_id' => $slot->day_id,
+            'hour_id' => $slot->id,
+            'day_date' => $slot->day_date,
+            'time' => $slot->time,
+            'available' => $slot->max_allowed - $slot->counter
+        ];
+    }
+
+
+    // Add this method to your AppointmentController class
+
+/**
+ * Store multiple appointments with different specialties, days, and hours
+ * POST /api/appointments/add-multiple-different
+ */
+public function storeMultipleDifferent(Request $request)
+{
+    Log::info('Multiple different appointments store request:', [
+        'data' => $request->all()
+    ]);
+
+    try {
+        $validatedData = $request->validate([
+            'event_id' => 'required|exists:events,id',
+            'appointments' => 'required|array|min:1',
+            'appointments.*.name' => 'required|string|max:255',
+            'appointments.*.lastName' => 'required|string|max:255',
+            'appointments.*.birthday' => 'required|date|before:today',
+            'appointments.*.state' => 'required|string|max:100',
+            'appointments.*.city' => 'required|string|max:100',
+            'appointments.*.diseases' => 'nullable|string|max:500',
+            'appointments.*.phone' => 'required|string|max:20',
+            'appointments.*.phone2' => 'nullable|string|max:20', // Made optional
+            'appointments.*.sex' => 'required|in:0,1',
+            'appointments.*.event_specialty_id' => 'required|exists:event_specialties,id',
+            'appointments.*.day_id' => 'required|exists:days,id',
+            'appointments.*.hour_id' => 'required|exists:hours,id',
+        ]);
+    } catch (\Illuminate\Validation\ValidationException $e) {
+        Log::error('Validation failed:', $e->errors());
+        return response()->json([
+            'message' => 'خطأ في البيانات المدخلة',
+            'errors' => $e->errors()
+        ], 422);
+    }
+
+    $event = Event::find($validatedData['event_id']);
+
+    if (!$event) {
+        return response()->json(['message' => 'الحدث غير موجود.'], 404);
+    }
+
+    if ($event->is_archived) {
+        return response()->json(['message' => 'الحدث مؤرشف ولا يمكن الحجز فيه.'], 403);
+    }
+
+    if (!$event->is_active) {
+        return response()->json(['message' => 'الحدث غير نشط حالياً.'], 403);
+    }
+
+    DB::beginTransaction();
+    try {
+        $createdAppointments = [];
+        $skippedAppointments = [];
+        $patientIds = [];
+        $duplicatePatients = [];
+        $fullSlots = [];
+
+        // Get next patient ID
+        $lastAppointment = Appointment::lockForUpdate()->orderBy('patient_id', 'desc')->first();
+        $nextPatientId = $lastAppointment ? $lastAppointment->patient_id + 1 : 1;
+
+        foreach ($validatedData['appointments'] as $index => $appointmentData) {
+            // Verify event_specialty belongs to this event
+            $eventSpecialty = EventSpecialty::with('specialty')->find($appointmentData['event_specialty_id']);
+            
+            if (!$eventSpecialty) {
+                $skippedAppointments[] = [
+                    'name' => $appointmentData['name'] . ' ' . $appointmentData['lastName'],
+                    'reason' => 'التخصص غير موجود'
+                ];
+                continue;
+            }
+
+            if ($eventSpecialty->event_id != $event->id) {
+                $skippedAppointments[] = [
+                    'name' => $appointmentData['name'] . ' ' . $appointmentData['lastName'],
+                    'reason' => 'التخصص لا ينتمي لهذا الحدث'
+                ];
+                continue;
+            }
+
+            // Verify day belongs to this event specialty
+            $dayExists = Day::where('id', $appointmentData['day_id'])
+                ->where('event_specialty_id', $appointmentData['event_specialty_id'])
+                ->exists();
+
+            if (!$dayExists) {
+                $skippedAppointments[] = [
+                    'name' => $appointmentData['name'] . ' ' . $appointmentData['lastName'],
+                    'reason' => 'اليوم المختار غير صالح لهذا التخصص'
+                ];
+                continue;
+            }
+
+            // Verify hour belongs to this day and check availability
+            $hour = Hour::where('id', $appointmentData['hour_id'])
+                ->where('day_id', $appointmentData['day_id'])
+                ->lockForUpdate()
+                ->first();
+
+            if (!$hour) {
+                $skippedAppointments[] = [
+                    'name' => $appointmentData['name'] . ' ' . $appointmentData['lastName'],
+                    'reason' => 'الساعة المختارة غير صالحة لهذا اليوم'
+                ];
+                continue;
+            }
+
+            // Check if hour is full
+            if ($hour->counter >= $hour->max_allowed) {
+                $fullSlots[] = [
+                    'name' => $appointmentData['name'] . ' ' . $appointmentData['lastName'],
+                    'specialty' => $eventSpecialty->specialty->name,
+                    'time' => $hour->time
+                ];
+                continue;
+            }
+
+            $fullName = trim($appointmentData['name'] . ' ' . $appointmentData['lastName']);
+
+            // Check for duplicate patient
+            $existingAppointment = Appointment::whereHas('eventSpecialty', function($query) use ($event) {
+                    $query->where('event_id', $event->id);
+                })
+                ->where('full_name', $fullName)
+                ->where('birthday', $appointmentData['birthday'])
+                ->first();
+
+            if ($existingAppointment) {
+                $duplicatePatients[] = [
+                    'name' => $fullName,
+                    'patient_id' => $existingAppointment->patient_id
+                ];
+                continue;
+            }
+
+            // Get doctor for this specialty
+            $doctor = $eventSpecialty->doctors()->first();
+
+            // Create appointment
+            $appointment = Appointment::create([
+                'user_id' => 1,
+                'event_id' => $validatedData['event_id'],
+                'event_specialty_id' => $appointmentData['event_specialty_id'],
+                'day_id' => $appointmentData['day_id'],
+                'hour_id' => $appointmentData['hour_id'],
+                'doctor_id' => $doctor ? $doctor->id : null,
+                'full_name' => $fullName,
+                'birthday' => $appointmentData['birthday'],
+                'state' => $appointmentData['state'],
+                'city' => $appointmentData['city'],
+                'diseases' => $appointmentData['diseases'] ?? 'nothing',
+                'phone' => $appointmentData['phone'],
+                'phone2' => $appointmentData['phone2'] ?? '',
+                'sex' => $appointmentData['sex'],
+                'patient_id' => $nextPatientId,
+                'specialty_order' => 1,
+                'status' => 'Pending',
+                'position' => $hour->counter + 1,
+                'orderList' => 0,
+            ]);
+
+            // Increment hour counter
+            $hour->increment('counter');
+            
+            // Check and update saturation
+            $this->checkAndUpdateSaturation($eventSpecialty);
+
+            Log::info('Appointment created:', [
+                'id' => $appointment->id,
+                'patient_id' => $nextPatientId,
+                'name' => $fullName,
+                'specialty' => $eventSpecialty->specialty->name,
+                'hour' => $hour->time
+            ]);
+
+            $createdAppointments[] = $appointment->load(['eventSpecialty.specialty', 'day', 'hour']);
+            $patientIds[] = $nextPatientId;
+            $nextPatientId++;
+        }
+
+        if (empty($createdAppointments)) {
+            DB::rollBack();
+            
+            $message = 'لم يتم إنشاء أي موعد.';
+            $reasons = [];
+            
+            if (!empty($duplicatePatients)) {
+                $reasons[] = sprintf(
+                    'مرضى لديهم مواعيد مسبقة: %s',
+                    implode(', ', array_column($duplicatePatients, 'name'))
+                );
+            }
+            
+            if (!empty($fullSlots)) {
+                $reasons[] = sprintf(
+                    'مواعيد ممتلئة: %s',
+                    implode(', ', array_map(function($slot) {
+                        return $slot['name'] . ' (' . $slot['specialty'] . ' - ' . $slot['time'] . ')';
+                    }, $fullSlots))
+                );
+            }
+            
+            if (!empty($skippedAppointments)) {
+                $reasons[] = sprintf(
+                    'مواعيد غير صالحة: %s',
+                    implode(', ', array_map(function($apt) {
+                        return $apt['name'] . ' - ' . $apt['reason'];
+                    }, $skippedAppointments))
+                );
+            }
+            
+            if (!empty($reasons)) {
+                $message .= ' ' . implode(' | ', $reasons);
+            }
+            
+            return response()->json([
+                'message' => $message,
+                'duplicate_patients' => $duplicatePatients,
+                'full_slots' => $fullSlots,
+                'skipped_appointments' => $skippedAppointments
+            ], 409);
+        }
+
+        DB::commit();
+
+        $message = sprintf(
+            'تم حجز %d موعد بنجاح من أصل %d مطلوب!',
+            count($createdAppointments),
+            count($validatedData['appointments'])
+        );
+
+        $response = [
+            'message' => $message,
+            'appointments' => $createdAppointments,
+            'patient_ids' => $patientIds,
+            'created_count' => count($createdAppointments),
+            'requested_count' => count($validatedData['appointments']),
+            'event_id' => $event->id,
+            'event_name' => $event->name,
+        ];
+
+        $warnings = [];
+        
+        if (!empty($skippedAppointments)) {
+            $warnings[] = sprintf(
+                'تنبيه: تم تجاوز %d موعد بسبب أخطاء في البيانات',
+                count($skippedAppointments)
+            );
+        }
+
+        if (!empty($duplicatePatients)) {
+            $warnings[] = sprintf(
+                'تنبيه: تم تجاوز %d موعد لمرضى لديهم مواعيد مسبقة: %s',
+                count($duplicatePatients),
+                implode(', ', array_column($duplicatePatients, 'name'))
+            );
+        }
+
+        if (!empty($fullSlots)) {
+            $warnings[] = sprintf(
+                'تنبيه: تم تجاوز %d موعد بسبب عدم توفر أماكن',
+                count($fullSlots)
+            );
+        }
+
+        if (!empty($warnings)) {
+            $response['warning_message'] = implode(' | ', $warnings);
+            $response['skipped_appointments'] = $skippedAppointments;
+            $response['duplicate_patients'] = $duplicatePatients;
+            $response['full_slots'] = $fullSlots;
+        }
+
+        return response()->json($response, 201);
+
+    } catch (\Exception $e) {
+        DB::rollBack();
+        Log::error('Multiple different appointments creation error:', [
+            'error' => $e->getMessage(),
+            'trace' => $e->getTraceAsString()
+        ]);
+        return response()->json([
+            'message' => 'حدث خطأ أثناء حجز المواعيد: ' . $e->getMessage(),
+            'error' => config('app.debug') ? $e->getMessage() : 'خطأ داخلي في الخادم'
+        ], 500);
+    }
+}
+
+
+
+/**
+ * Create test appointments for ALL specialties in an event
+ * POST /api/test-appointments/create-all
+ * Creates 15 patients × number of specialties
+ */
+
+
+// Update createAllTestAppointments
+public function createAllTestAppointments(Request $request)
+{
+    try {
+        // Use fixed test event ID - no validation needed
+        $event = Event::find(self::TEST_EVENT_ID);
+
+        if (!$event) {
+            return response()->json([
+                'message' => 'حدث الاختبار غير موجود (ID: 2). يرجى إنشاء الحدث أولاً.'
+            ], 404);
+        }
+
+
+        if ($event->is_archived) {
+            return response()->json(['message' => 'لا يمكن إنشاء مواعيد تجريبية في حدث مؤرشف.'], 403);
+        }
+
+        if (!$event->is_active) {
+            return response()->json(['message' => 'لا يمكن إنشاء مواعيد تجريبية في حدث غير نشط.'], 403);
+        }
+
+        // Get all event specialties
+        $eventSpecialties = EventSpecialty::with('specialty')
+            ->where('event_id', $event->id)
+            ->where('is_active', true)
+            ->get();
+
+        if ($eventSpecialties->isEmpty()) {
+            return response()->json(['message' => 'لا توجد تخصصات نشطة في هذا الحدث.'], 404);
+        }
+
+        // Hardcoded test patients data (15 patients)
+        $testPatients = [
+            ['name' => 'أحمد', 'lastName' => 'بن علي', 'birthday' => '1990-05-15', 'sex' => '0', 'state' => 'الجزائر', 'city' => 'الجزائر العاصمة', 'phone' => '0555123456'],
+            ['name' => 'فاطمة', 'lastName' => 'محمد', 'birthday' => '1985-03-22', 'sex' => '1', 'state' => 'وهران', 'city' => 'وهران', 'phone' => '0777654321'],
+            ['name' => 'محمد', 'lastName' => 'العربي', 'birthday' => '1992-08-10', 'sex' => '0', 'state' => 'قسنطينة', 'city' => 'قسنطينة', 'phone' => '0666111222'],
+            ['name' => 'خديجة', 'lastName' => 'حسن', 'birthday' => '1988-12-05', 'sex' => '1', 'state' => 'عنابة', 'city' => 'عنابة', 'phone' => '0555987654'],
+            ['name' => 'يوسف', 'lastName' => 'بوعلام', 'birthday' => '1995-06-18', 'sex' => '0', 'state' => 'سطيف', 'city' => 'سطيف', 'phone' => '0777456789'],
+            ['name' => 'زينب', 'lastName' => 'عبد الله', 'birthday' => '1987-09-25', 'sex' => '1', 'state' => 'البليدة', 'city' => 'البليدة', 'phone' => '0666789456'],
+            ['name' => 'كريم', 'lastName' => 'السعيد', 'birthday' => '1993-04-14', 'sex' => '0', 'state' => 'باتنة', 'city' => 'باتنة', 'phone' => '0555321654'],
+            ['name' => 'مريم', 'lastName' => 'الطاهر', 'birthday' => '1991-11-30', 'sex' => '1', 'state' => 'بجاية', 'city' => 'بجاية', 'phone' => '0777852963'],
+            ['name' => 'عمر', 'lastName' => 'بن سالم', 'birthday' => '1989-07-08', 'sex' => '0', 'state' => 'تلمسان', 'city' => 'تلمسان', 'phone' => '0666147258'],
+            ['name' => 'سارة', 'lastName' => 'المهدي', 'birthday' => '1994-02-17', 'sex' => '1', 'state' => 'بشار', 'city' => 'بشار', 'phone' => '0555369852'],
+            ['name' => 'رشيد', 'lastName' => 'بلقاسم', 'birthday' => '1986-10-23', 'sex' => '0', 'state' => 'سكيكدة', 'city' => 'سكيكدة', 'phone' => '0777951753'],
+            ['name' => 'نادية', 'lastName' => 'عيسى', 'birthday' => '1990-01-12', 'sex' => '1', 'state' => 'مستغانم', 'city' => 'مستغانم', 'phone' => '0666258147'],
+            ['name' => 'سمير', 'lastName' => 'رمضان', 'birthday' => '1988-05-28', 'sex' => '0', 'state' => 'تيزي وزو', 'city' => 'تيزي وزو', 'phone' => '0555753951'],
+            ['name' => 'هدى', 'lastName' => 'الصغير', 'birthday' => '1992-09-07', 'sex' => '1', 'state' => 'المسيلة', 'city' => 'المسيلة', 'phone' => '0777159357'],
+            ['name' => 'ياسين', 'lastName' => 'حمزة', 'birthday' => '1991-03-19', 'sex' => '0', 'state' => 'ورقلة', 'city' => 'ورقلة', 'phone' => '0666456789'],
+        ];
+
+        DB::beginTransaction();
+        try {
+            $createdAppointments = [];
+            $skippedCount = 0;
+            $warnings = [];
+            $specialtySlots = [];
+
+            // Get next patient_id
+            $lastAppointment = Appointment::lockForUpdate()->orderBy('patient_id', 'desc')->first();
+            $nextPatientId = $lastAppointment ? $lastAppointment->patient_id + 1 : 1;
+
+            // Find first available slot for each specialty
+            foreach ($eventSpecialties as $specialty) {
+                $slot = $this->findFirstAvailableSlot($specialty->id);
+                if (!$slot) {
+                    $warnings[] = sprintf(
+                        'لا توجد أماكن متاحة في تخصص: %s',
+                        $specialty->specialty->name
+                    );
+                    continue;
+                }
+                $specialtySlots[$specialty->id] = [
+                    'slot' => $slot,
+                    'hour' => Hour::lockForUpdate()->find($slot['hour_id']),
+                    'doctor' => $specialty->doctors()->first(),
+                    'specialty' => $specialty
+                ];
+            }
+
+            if (empty($specialtySlots)) {
+                DB::rollBack();
+                return response()->json([
+                    'message' => 'لا توجد أماكن متاحة في أي من التخصصات'
+                ], 409);
+            }
+
+            // Create appointments for each patient in each specialty
+            foreach ($testPatients as $index => $patientData) {
+                $fullName = "[تجريبي] " . trim($patientData['name'] . ' ' . $patientData['lastName']);
+                $patientCreatedCount = 0;
+
+                foreach ($specialtySlots as $specialtyId => $slotData) {
+                    $hour = $slotData['hour'];
+                    $slot = $slotData['slot'];
+                    $specialty = $slotData['specialty'];
+                    $doctor = $slotData['doctor'];
+
+                    // Check if hour still has space
+                    if ($hour->counter >= $hour->max_allowed) {
+                        if ($patientCreatedCount === 0) {
+                            // Only warn if first specialty for this patient
+                            $skippedCount++;
+                        }
+                        continue;
+                    }
+
+                    // Determine specialty_order (first specialty = 1, others = 0)
+                    $specialtyOrder = ($patientCreatedCount === 0) ? 1 : 0;
+
+                    // Create appointment
+                    $appointment = Appointment::create([
+                        'user_id' => 1,
+                        'event_id' => $event->id,
+                        'event_specialty_id' => $specialtyId,
+                        'day_id' => $slot['day_id'],
+                        'hour_id' => $slot['hour_id'],
+                        'doctor_id' => $doctor ? $doctor->id : null,
+                        'full_name' => $fullName,
+                        'birthday' => $patientData['birthday'],
+                        'state' => $patientData['state'],
+                        'city' => $patientData['city'],
+                        'diseases' => 'nothing',
+                        'phone' => $patientData['phone'],
+                        'phone2' => '',
+                        'sex' => $patientData['sex'],
+                        'patient_id' => $nextPatientId,
+                        'specialty_order' => $specialtyOrder,
+                        'status' => 'Pending',
+                        'position' => $hour->counter + 1,
+                        'orderList' => 0,
+                    ]);
+
+                    $hour->increment('counter');
+                    $createdAppointments[] = $appointment;
+                    $patientCreatedCount++;
+                }
+
+                if ($patientCreatedCount > 0) {
+                    $nextPatientId++;
+                }
+            }
+
+            // Check and update saturation for all specialties
+            foreach ($specialtySlots as $slotData) {
+                $this->checkAndUpdateSaturation($slotData['specialty']);
+            }
+
+            DB::commit();
+
+            $patientsCount = $nextPatientId - ($lastAppointment ? $lastAppointment->patient_id + 1 : 1);
+
+            $response = [
+                'message' => 'تم إنشاء المواعيد التجريبية بنجاح!',
+                'created_count' => count($createdAppointments),
+                'patients_count' => $patientsCount,
+                'specialties_count' => count($specialtySlots),
+                'event_name' => $event->name,
+            ];
+
+            if (!empty($warnings)) {
+                $response['warning_message'] = implode(' | ', $warnings);
+                $response['skipped_count'] = $skippedCount;
+            }
+
+            Log::info('Test appointments created for all specialties:', [
+                'event_id' => $event->id,
+                'appointments_created' => count($createdAppointments),
+                'patients' => $patientsCount,
+                'specialties' => count($specialtySlots)
+            ]);
+
+            return response()->json($response, 201);
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Create all test appointments error:', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            return response()->json([
+                'message' => 'حدث خطأ أثناء إنشاء المواعيد التجريبية',
+                'error' => config('app.debug') ? $e->getMessage() : 'خطأ داخلي'
+            ], 500);
+        }
+
+    } catch (\Illuminate\Validation\ValidationException $e) {
+        return response()->json([
+            'message' => 'خطأ في البيانات المدخلة',
+            'errors' => $e->errors()
+        ], 422);
+    }
+}
+
+/**
+ * Reset all test appointments status to Pending
+ * POST /api/test-appointments/reset-status
+ */
+public function resetTestAppointmentsStatus(Request $request)
+{
+    try {
+        DB::beginTransaction();
+        try {
+            // Get all test appointments for this event
+            $testAppointments = Appointment::where('event_id', self::TEST_EVENT_ID)
+                ->where('full_name', 'LIKE', '[تجريبي]%')
+                ->get();
+
+            if ($testAppointments->isEmpty()) {
+                DB::rollBack();
+                return response()->json([
+                    'message' => 'لا توجد مواعيد تجريبية لإعادة تعيينها',
+                    'updated_count' => 0
+                ], 200);
+            }
+
+            $updatedCount = 0;
+
+            foreach ($testAppointments as $appointment) {
+                if ($appointment->status !== 'Pending') {
+                    $appointment->status = 'Pending';
+                    $appointment->orderList = 0;
+                    $appointment->save();
+                    $updatedCount++;
+                }
+            }
+
+            DB::commit();
+
+            Log::info('Test appointments status reset:', [
+                'event_id' => self::TEST_EVENT_ID,
+                'updated_count' => $updatedCount,
+                'total_test_appointments' => $testAppointments->count()
+            ]);
+
+            return response()->json([
+                'message' => 'تم إعادة تعيين حالة المواعيد التجريبية بنجاح',
+                'updated_count' => $updatedCount,
+                'total_count' => $testAppointments->count(),
+                'event_id' => self::TEST_EVENT_ID  // ✅ Use constant instead of $validated
+            ], 200);
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            throw $e;
+        }
+
+    } catch (\Exception $e) {
+        Log::error('Reset test appointments status error:', [
+            'error' => $e->getMessage(),
+            'trace' => $e->getTraceAsString()
+        ]);
+        return response()->json([
+            'message' => 'حدث خطأ أثناء إعادة تعيين الحالات',
+            'error' => config('app.debug') ? $e->getMessage() : 'خطأ داخلي'
+        ], 500);
+    }
+}
+
+/**
+ * Count test appointments for an event
+ * GET /api/test-appointments/count
+ */
+public function countTestAppointments(Request $request)
+{
+    try {
+        $count = Appointment::where('event_id', self::TEST_EVENT_ID)
+            ->where('full_name', 'LIKE', '[تجريبي]%')
+            ->count();
+
+        return response()->json([
+            'count' => $count,
+            'event_id' => self::TEST_EVENT_ID  // ✅ Use constant
+        ], 200);
+
+    } catch (\Exception $e) {
+        Log::error('Count test appointments error:', [
+            'error' => $e->getMessage()
+        ]);
+        return response()->json([
+            'message' => 'حدث خطأ أثناء عد المواعيد التجريبية',
+            'count' => 0
+        ], 500);
+    }
+}
+
+/**
+ * Delete all test appointments for an event
+ * DELETE /api/test-appointments/delete-all
+ */
+public function deleteAllTestAppointments(Request $request)
+{
+    try {
+        DB::beginTransaction();
+        try {
+            // Get all test appointments for this event
+            $testAppointments = Appointment::where('event_id', self::TEST_EVENT_ID)
+                ->where('full_name', 'LIKE', '[تجريبي]%')
+                ->lockForUpdate()
+                ->get();
+
+            if ($testAppointments->isEmpty()) {
+                DB::rollBack();
+                return response()->json([
+                    'message' => 'لا توجد مواعيد تجريبية لحذفها',
+                    'deleted_count' => 0
+                ], 200);
+            }
+
+            // Group by hour_id to decrement counters
+            $hourCounters = [];
+            foreach ($testAppointments as $appointment) {
+                if (!isset($hourCounters[$appointment->hour_id])) {
+                    $hourCounters[$appointment->hour_id] = 0;
+                }
+                $hourCounters[$appointment->hour_id]++;
+            }
+
+            // Decrement counters
+            foreach ($hourCounters as $hourId => $count) {
+                $hour = Hour::lockForUpdate()->find($hourId);
+                if ($hour) {
+                    $hour->counter = max(0, $hour->counter - $count);
+                    $hour->save();
+                    
+                    Log::info('Hour counter decremented after test deletion:', [
+                        'hour_id' => $hourId,
+                        'decremented_by' => $count,
+                        'new_counter' => $hour->counter
+                    ]);
+                }
+            }
+
+            // Get affected event specialties for saturation check
+            $affectedSpecialtyIds = $testAppointments->pluck('event_specialty_id')->unique();
+
+            // Delete appointments
+            $deletedCount = Appointment::whereIn('id', $testAppointments->pluck('id'))->delete();
+
+            // Check and remove saturation
+            foreach ($affectedSpecialtyIds as $specialtyId) {
+                $eventSpecialty = EventSpecialty::find($specialtyId);
+                if ($eventSpecialty) {
+                    $this->checkAndRemoveSaturation($eventSpecialty);
+                }
+            }
+
+            DB::commit();
+
+            Log::info('Test appointments deleted:', [
+                'event_id' => self::TEST_EVENT_ID,
+                'deleted_count' => $deletedCount,
+                'affected_hours' => count($hourCounters)
+            ]);
+
+            return response()->json([
+                'message' => 'تم حذف جميع المواعيد التجريبية بنجاح',
+                'deleted_count' => $deletedCount,
+                'event_id' => self::TEST_EVENT_ID  // ✅ Use constant instead of $validated
+            ], 200);
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            throw $e;
+        }
+
+    } catch (\Exception $e) {
+        Log::error('Delete test appointments error:', [
+            'error' => $e->getMessage(),
+            'trace' => $e->getTraceAsString()
+        ]);
+        return response()->json([
+            'message' => 'حدث خطأ أثناء حذف المواعيد التجريبية',
+            'error' => config('app.debug') ? $e->getMessage() : 'خطأ داخلي'
+        ], 500);
+    }
+}
+
+/**
+ * Helper method to find first available slot for a specialty
+ * (Add this if it doesn't already exist in your controller)
+ */
+private function findFirstAvailableSlot($eventSpecialtyId)
+{
+    $now = now();
+    
+    $slot = Hour::join('days', 'hours.day_id', '=', 'days.id')
+        ->where('days.event_specialty_id', $eventSpecialtyId)
+        ->where('days.day_date', '>=', $now->toDateString())
+        ->whereRaw('hours.counter < hours.max_allowed')
+        ->orderByRaw("CONCAT(days.day_date, ' ', hours.time) ASC")
+        ->select(
+            'hours.id as hour_id',
+            'hours.day_id',
+            'hours.time',
+            'hours.max_allowed',
+            'hours.counter',
+            'days.day_date'
+        )
+        ->first();
+    
+    if (!$slot) {
+        return null;
+    }
+    
+    return [
+        'day_id' => $slot->day_id,
+        'hour_id' => $slot->hour_id,
+        'day_date' => $slot->day_date,
+        'time' => $slot->time,
+        'available' => $slot->max_allowed - $slot->counter
+    ];
 }
 }

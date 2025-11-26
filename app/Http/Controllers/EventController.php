@@ -934,84 +934,22 @@ public function index()
     try {
         $createdAdmins = [];
 
-        // Create Recipient Admin
-        $recipientPassword = $this->generateRandomPassword();
-        $recipientEmail = $this->generateUniqueEmail('recipient', 'event' . time());
-        
-        $recipientAdmin = User::create([
-            'name' => "Recipient Admin - {$request->name}",
-            'email' => $recipientEmail,
-            'password' => Hash::make($recipientPassword),
-            'role_id' => 5,
-        ]);
-        
-        $createdAdmins['recipient_admin'] = [
-            'type' => 'Recipient Admin',
-            'specialty' => 'All Specialties',
-            'name' => $recipientAdmin->name,
-            'email' => $recipientEmail,
-            'password' => $recipientPassword,
-        ];
-
-        // Create Special Admin
-        $specialPassword = $this->generateRandomPassword();
-        $specialEmail = $this->generateUniqueEmail('special', 'event' . time());
-        
-        $specialAdmin = User::create([
-            'name' => "Special Admin - {$request->name}",
-            'email' => $specialEmail,
-            'password' => Hash::make($specialPassword),
-            'role_id' => 3,
-        ]);
-        
-        $createdAdmins['special_admin'] = [
-            'type' => 'Special Admin',
-            'specialty' => 'All Specialties',
-            'name' => $specialAdmin->name,
-            'email' => $specialEmail,
-            'password' => $specialPassword,
-        ];
-
-        // Create Check Admin
-        $checkPassword = $this->generateRandomPassword();
-        $checkEmail = $this->generateUniqueEmail('check', 'event' . time());
-        
-        $checkAdmin = User::create([
-            'name' => "Check Admin - {$request->name}",
-            'email' => $checkEmail,
-            'password' => Hash::make($checkPassword),
-            'role_id' => 4,
-        ]);
-        
-        $createdAdmins['check_admin'] = [
-            'type' => 'Check Admin',
-            'specialty' => 'All Specialties',
-            'name' => $checkAdmin->name,
-            'email' => $checkEmail,
-            'password' => $checkPassword,
-        ];
-
         // Create event
-        $event = Event::create([
-            'name' => $request->name,
-            'date' => $request->date,
-            'state' => $request->state,
-            'city' => $request->city,
-            'description' => $request->description,
-            'nbr_of_allowed_specialties' => $request->nbr_of_allowed_specialties ?? 1,
-            'rules_ids' => $request->rules_ids ?? [], // ADD THIS
-            'is_active' => $request->is_active ?? true,
-            'is_tawat' => $request->is_tawat ?? true,
-            'is_archived' => false,
-            'special_admin_id' => $specialAdmin->id,
-            'recipient_admin_id' => $recipientAdmin->id,
-            'check_admin_id' => $checkAdmin->id,
-        ]);
-
-        // Update all created admins with event_id
-        $recipientAdmin->update(['event_id' => $event->id]);
-        $specialAdmin->update(['event_id' => $event->id]);
-        $checkAdmin->update(['event_id' => $event->id]);
+    $event = Event::create([
+        'name' => $request->name,
+        'date' => $request->date,
+        'state' => $request->state,
+        'city' => $request->city,
+        'description' => $request->description,
+        'nbr_of_allowed_specialties' => $request->nbr_of_allowed_specialties ?? 1,
+        'rules_ids' => $request->rules_ids ?? [],
+        'is_active' => $request->is_active ?? true,
+        'is_tawat' => $request->is_tawat ?? true,
+        'is_archived' => false,
+        'special_admin_id' => null,
+        'recipient_admin_id' => null,
+        'check_admin_id' => null,
+    ]);
 
         // Process each specialty
         foreach ($request->specialties as $specData) {
@@ -1077,7 +1015,6 @@ public function index()
         return response()->json([
             'message' => 'تم إنشاء الحدث بنجاح',
             'event' => $event,
-            'credentials' => $createdAdmins,
             'summary' => [
                 'total_specialties' => count($request->specialties),
                 'special_admins_created' => 1,
@@ -1648,5 +1585,69 @@ public function archive($id)
         }
     }
 
-    // ... (keep all other methods like getAdminCredentials, resetEventAdminPasswords, etc.)
-}
+/**
+ * Assign event to all users (bulk assignment for training)
+ * POST /api/events/{eventId}/assign-to-all-users
+ */
+public function assignToAllUsers(Request $request, $eventId)
+{
+    try {
+        $event = Event::findOrFail($eventId);
+        
+        // Get all users except SuperAdmin (role_id = 1)
+        $users = User::where('role_id', '!=', 1)->get();
+        
+        if ($users->isEmpty()) {
+            return response()->json([
+                'message' => 'لا يوجد مستخدمين لتعيينهم'
+            ], 404);
+        }
+
+        $updatedCount = 0;
+        $skippedCount = 0;
+
+        foreach ($users as $user) {
+            // Only update if user has a valid role (2-7)
+            if (in_array($user->role_id, [2, 3, 4, 5, 6, 7])) {
+                $user->event_id = $eventId;
+                $user->save();
+                $updatedCount++;
+            } else {
+                $skippedCount++;
+            }
+        }
+
+        Log::info('Bulk event assignment completed', [
+            'event_id' => $eventId,
+            'event_name' => $event->name,
+            'updated_count' => $updatedCount,
+            'skipped_count' => $skippedCount
+        ]);
+
+        return response()->json([
+            'message' => "تم تعيين الحدث '{$event->name}' لـ {$updatedCount} مستخدم بنجاح",
+            'updated_count' => $updatedCount,
+            'skipped_count' => $skippedCount,
+            'event' => [
+                'id' => $event->id,
+                'name' => $event->name
+            ]
+        ], 200);
+
+    } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+        return response()->json([
+            'message' => 'الحدث غير موجود'
+        ], 404);
+    } catch (\Exception $e) {
+        Log::error('Bulk event assignment failed', [
+            'event_id' => $eventId,
+            'error' => $e->getMessage(),
+            'trace' => $e->getTraceAsString()
+        ]);
+
+        return response()->json([
+            'message' => 'حدث خطأ أثناء تعيين الحدث للمستخدمين',
+            'error' => config('app.debug') ? $e->getMessage() : 'خطأ داخلي'
+        ], 500);
+    }
+}}

@@ -29,18 +29,19 @@ class Appointment extends Model
         'comment',
         'status',
         'is_special',
+        'is_test', // NEW
         'archived_at',
         'archived_reason',
-        'medical_documents', // NEW
+        'medical_documents',
     ];
 
     protected $casts = [
         'birthday' => 'date',
         'is_special' => 'boolean',
+        'is_test' => 'boolean', // NEW
         'archived_at' => 'datetime',
-        'medical_documents' => 'array', // NEW - Cast JSON to array
+        'medical_documents' => 'array',
     ];
-
     public function user()
     {
         return $this->belongsTo(User::class);
@@ -100,5 +101,21 @@ class Appointment extends Model
         return array_map(function($path) {
             return asset('storage/' . $path);
         }, $this->medical_documents);
+    }
+
+     /**
+     * Scope to exclude test appointments
+     */
+    public function scopeRealOnly($query)
+    {
+        return $query->where('is_test', false);
+    }
+
+    /**
+     * Scope to get only test appointments
+     */
+    public function scopeTestOnly($query)
+    {
+        return $query->where('is_test', true);
     }
 }

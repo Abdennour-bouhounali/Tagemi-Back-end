@@ -138,6 +138,7 @@ Route::get('/user', function(Request $request) {
     Route::get('/events/{eventId}/admins/credentials', [EventController::class, 'getAdminCredentials']);
     Route::post('/events/{eventId}/reset-passwords', [EventController::class, 'resetEventAdminPasswords']);
     Route::delete('/events/{eventId}/admins', [EventController::class, 'deleteEventAdmins']);
+    Route::post('/events/{id}/assign-to-all-users', [EventController::class, 'assignToAllUsers']);
 
     Route::patch('/events/{eventId}/specialties/{eventSpecialtyId}/toggle-saturation', 
         [EventController::class, 'toggleSaturation']);
@@ -203,6 +204,10 @@ Route::get('/user', function(Request $request) {
     Route::post('/specialty', [SpecialtyController::class, 'store']);
     Route::put('/specialty/{id}', [SpecialtyController::class, 'update']);
     Route::delete('/specialty/{id}', [SpecialtyController::class, 'destroy']);
+
+     // Specialty transfer routes
+    Route::get('/appointments/{id}/available-specialties', [AppointmentController::class, 'getAvailableSpecialties']);
+    Route::post('/appointments/{id}/transfer-specialty', [AppointmentController::class, 'transferSpecialty']);
     
     // ============================================
     // DOCTOR MANAGEMENT
@@ -213,7 +218,9 @@ Route::get('/user', function(Request $request) {
     // ============================================
     // USER & ROLE MANAGEMENT
     // ============================================
-    Route::get('/users', [UserController::class, 'getByRole']);
+    Route::get('/users', [UserController::class, 'index']); // List all users
+    Route::post('/users/{id}/assign', [UserController::class, 'assignEvent']); // Assign user to event
+    Route::get('/users/by-role', [UserController::class, 'getByRole']); // Renamed to avoid conflict if needed, or keep as is if query param is used
     Route::get('/users/role/{roleId}', [UserController::class, 'getByRoleId']);
     
     Route::apiResource('role', RoleController::class);
@@ -256,6 +263,21 @@ Route::get('/user', function(Request $request) {
     Route::post('/startVisitDay', [UsefulController::class, 'startVisitDay']);
     Route::post('/DisplayHideAuth', [UsefulController::class, 'DisplayHideAuth']);
     Route::get('/getstartDay', [UsefulController::class, 'getstartDay']);
+    // ============================================
+    // USERS ROUTES
+    // ==========================================
+
+    Route::prefix('users')->group(function () {
+    Route::get('/', [UserController::class, 'index']);                    // List all users
+    Route::get('/by-role', [UserController::class, 'getByRole']);         // Get by role (query param)
+    Route::get('/role/{roleId}', [UserController::class, 'getByRoleId']); // Get by role (path param)
+    Route::get('/event/{eventId}', [UserController::class, 'getByEvent']); // Get by event
+    Route::get('/{id}', [UserController::class, 'show']);                 // Get single user
+    Route::put('/{id}', [UserController::class, 'update']);               // Update user
+    Route::delete('/{id}', [UserController::class, 'destroy']);           // Delete user
+    Route::post('/{id}/assign', [UserController::class, 'assignEvent']);  // Assign event & role
+    Route::post('/{id}/unassign', [UserController::class, 'unassignEvent']); // Unassign from event
+});
 });
 Route::apiResource('rules', RuleController::class);
 Route::middleware('auth:sanctum')->get('/getdisplayAuth', [UserController::class, 'getdisplayAuth']);
@@ -309,7 +331,25 @@ Route::prefix('activities')->group(function () {
         Route::delete('/{id}', [ActivityController::class, 'destroy']);
         Route::post('/{id}/reorder-media', [ActivityController::class, 'reorderMedia']);
     });
+
 });
 Route::get('/public/waitinglist', [WaitingListController::class, 'getPublicWaitingList']);
 
 
+Route::post('/appointments/add-multiple-different', [AppointmentController::class, 'storeMultipleDifferent'])
+    ->middleware('auth:sanctum');
+
+
+Route::middleware('auth:sanctum')->group(function () {
+    // Create test appointments for ALL specialties in event (15 × specialties count)
+    Route::post('/test-appointments/create-all', [AppointmentController::class, 'createAllTestAppointments']);
+    
+    // Reset all test appointments status to Pending
+    Route::post('/test-appointments/reset-status', [AppointmentController::class, 'resetTestAppointmentsStatus']);
+    
+    // Count test appointments
+    Route::get('/test-appointments/count', [AppointmentController::class, 'countTestAppointments']);
+    
+    // Delete all test appointments
+    Route::delete('/test-appointments/delete-all', [AppointmentController::class, 'deleteAllTestAppointments']);
+});
