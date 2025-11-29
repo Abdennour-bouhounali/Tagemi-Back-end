@@ -1384,13 +1384,23 @@ private function handleMedicalDocuments(Request $request, $patientId)
      */
     public function SpecialCase($id)
     {
-        $user_role = Auth::user()->role_id;
+    //     $user_role = Auth::user()->role_id;
+    // // Convert to integer to ensure type consistency
+    // $user_role = (int) $user_role;
 
-        if (!in_array($user_role, [1, 3])) {
-            return response()->json(['message' => 'You are not authorized'], 403);
-        }
+    // if (!in_array($user_role, [1, 3], true)) { // Added strict comparison
+    //     return response()->json([
+    //         'message' => 'You are not authorized',
+    //         'your_role' => $user_role, // Debug info
+    //         'role_type' => gettype($user_role)
+    //     ], 403);
+    // }
 
         // Get all appointments for this patient
+        $appointment = Appointment::where('patient_id', $id)->first();
+        if (!$appointment) {
+            return response()->json(['message' => 'Patient not found'], 404);
+        }
         $appointments = Appointment::where('patient_id', $id)->get();
 
         if ($appointments->isEmpty()) {
@@ -2784,4 +2794,88 @@ private function findFirstAvailableSlot($eventSpecialtyId)
         'available' => $slot->max_allowed - $slot->counter
     ];
 }
+
+
+   /**
+     * Mark appointment as reminded (WhatsApp sent)
+     */
+    public function markAsReminded(Request $request, $id)
+    {
+        try {
+            $appointment = Appointment::findOrFail($id);
+            
+            $appointment->update([
+                'is_reminded' => true,
+                'reminded_at' => now(),
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'تم تحديث حالة التذكير بنجاح',
+                'appointment' => $appointment->load(['eventSpecialty.specialty', 'day', 'hour', 'doctor'])
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'حدث خطأ أثناء التحديث: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Mark multiple appointments as reminded (for patient with multiple appointments)
+     */
+    public function markMultipleAsReminded(Request $request)
+    {
+        $request->validate([
+            'patient_id' => 'required',
+            'event_id' => 'required',
+        ]);
+
+        try {
+            $updated = Appointment::where('patient_id', $request->patient_id)
+                ->where('event_id', $request->event_id)
+                ->update([
+                    'is_reminded' => true,
+                    'reminded_at' => now(),
+                ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => "تم تحديث {$updated} موعد بنجاح",
+                'updated_count' => $updated
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'حدث خطأ أثناء التحديث: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Get reminder statistics for an event
+     */
+    public function getReminderStats($eventId)
+    {
+        try {
+            $stats = Appointment::where('event_id', $eventId)
+                ->select(
+                    DB::raw('COUNT(*) as total'),
+                    DB::raw('SUM(CASE WHEN is_reminded = 1 THEN 1 ELSE 0 END) as reminded'),
+                    DB::raw('SUM(CASE WHEN is_reminded = 0 THEN 1 ELSE 0 END) as not_reminded')
+                )
+                ->first();
+
+            return response()->json([
+                'success' => true,
+                'stats' => $stats
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'حدث خطأ أثناء جلب الإحصائيات: ' . $e->getMessage()
+            ], 500);
+        }
+    }
 }

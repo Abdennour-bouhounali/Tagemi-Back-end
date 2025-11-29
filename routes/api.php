@@ -22,6 +22,7 @@ use App\Http\Controllers\ContactController;
 use App\Http\Controllers\VolunteerController;
 use App\Http\Controllers\UserController;
 use App\Http\Controllers\EventReportController;
+use App\Http\Controllers\EvaluationController;
 // routes/api.php
 
 Route::middleware('auth:sanctum')->group(function () {
@@ -353,3 +354,65 @@ Route::middleware('auth:sanctum')->group(function () {
     // Delete all test appointments
     Route::delete('/test-appointments/delete-all', [AppointmentController::class, 'deleteAllTestAppointments']);
 });
+
+use App\Http\Controllers\WhatsAppBotController;
+
+// WhatsApp Bot Routes
+Route::middleware(['auth:sanctum'])->group(function () {
+    
+    // Execute WhatsApp bot
+    Route::post('/whatsapp-bot/execute', [WhatsAppBotController::class, 'executeBot']);
+    
+    // Get bot status and logs
+    Route::get('/whatsapp-bot/status', [WhatsAppBotController::class, 'getStatus']);
+    
+    // Test configuration
+    Route::get('/whatsapp-bot/test-config', [WhatsAppBotController::class, 'testConfig']);
+    
+});
+
+
+// في ملف routes/api.php
+Route::middleware('auth:sanctum')->group(function () {
+    // Mark appointment as reminded
+    Route::post('/appointments/{id}/mark-reminded', [AppointmentController::class, 'markAsReminded']);
+    
+    // Mark multiple appointments as reminded
+    Route::post('/appointments/mark-multiple-reminded', [AppointmentController::class, 'markMultipleAsReminded']);
+    
+    // Get reminder statistics
+    Route::get('/appointments/reminder-stats/{eventId}', [AppointmentController::class, 'getReminderStats']);
+});
+
+
+// Dans routes/api.php
+
+// Public routes (no authentication required)
+Route::prefix('evaluations')->group(function () {
+    // Get form data for specific event
+    Route::get('/form-data/{eventId}', [EvaluationController::class, 'getFormData']);
+    
+    // Submit evaluation
+    Route::post('/', [EvaluationController::class, 'store']);
+});
+
+// Protected routes (require authentication)
+Route::middleware('auth:sanctum')->prefix('evaluations')->group(function () {
+    // Admin only routes
+   
+        // List all evaluations
+        Route::get('/', [EvaluationController::class, 'index']);
+        
+        // Get single evaluation
+        Route::get('/{id}', [EvaluationController::class, 'show']);
+        
+        // Mark as processed
+        Route::patch('/{id}/process', [EvaluationController::class, 'markAsProcessed']);
+        
+        // Delete evaluation
+        Route::delete('/{id}', [EvaluationController::class, 'destroy']);
+        
+        // Get statistics for event
+    
+});
+Route::get('events/{eventId}/evaluations/statistics', [EvaluationController::class, 'statistics']);

@@ -122,116 +122,7 @@ class WaitingListController extends Controller implements HasMiddleware
         }
     }
 
-    /**
-     * Get waiting list - first 10 present appointments per specialty
-     */
-/**
- * Get waiting list - first 10 present appointments per specialty for specific event
- * Supports both route parameter (/api/waitinglist/getwaitinglist/{id}) 
- * and query parameter (/api/waitinglist/getwaitinglist?event_id={id})
- * 
- * @param Request $request
- * @param int|null $id Optional route parameter
- * @return \Illuminate\Http\JsonResponse
- */
-/**
- * Get waiting list - BULLETPROOF VERSION
- */
-public function getwaitinglist(Request $request, $id = null)
-{
-    $eventId = $id ?? $request->query('event_id') ?? $request->input('event_id');
-    try {
-        // Get event ID from parameter or query
-        $eventId = $id ?? $request->query('event_id') ?? $request->input('event_id');
-        
-        if (!$eventId) {
-            return response()->json([
-                'message' => 'No event ID provided',
-                'data' => []
-            ], 400);
-        }
-
-        // Find event
-        $event = Event::find($eventId);
-        
-        if (!$event) {
-            return response()->json([
-                'message' => 'Event not found',
-                'data' => [],
-                'event' => null
-            ], 404);
-        }
-
-        // Get appointments using DB query (most reliable)
-        $results = DB::table('appointments')
-            ->join('event_specialties', 'appointments.event_specialty_id', '=', 'event_specialties.id')
-            ->join('specialties', 'event_specialties.specialty_id', '=', 'specialties.id')
-            ->where('event_specialties.event_id', $eventId)
-            ->where('appointments.status', 'Present')
-            ->select(
-                'appointments.patient_id',
-                'appointments.full_name',
-                'appointments.orderList',
-                'specialties.id as specialty_id',
-                'specialties.name as specialty_name'
-            )
-            ->orderBy('specialties.id')
-            ->orderBy('appointments.orderList')
-            ->get();
-
-        // Group by specialty and take first 10
-        $grouped = [];
-        foreach ($results as $row) {
-            $specialtyId = $row->specialty_id;
-            
-            if (!isset($grouped[$specialtyId])) {
-                $grouped[$specialtyId] = [];
-            }
-            
-            // Only take first 10 per specialty
-            if (count($grouped[$specialtyId]) < 10) {
-                $grouped[$specialtyId][] = [
-                    'patient_id' => $row->patient_id,
-                    'full_name' => $row->full_name,
-                    'order' => $row->orderList ?? 0,
-                    'position' => 1,
-                    'is_priority' => false,
-                    'is_special' => false,
-                    'status' => 'Present'
-                ];
-            }
-        }
-
-        // Return response
-        return response()->json([
-            'data' => $grouped,
-            'event' => [
-                'id' => $event->id,
-                'name' => $event->name,
-                'is_current' => isset($event->is_current) ? (bool)$event->is_current : false
-            ],
-            'timestamp' => now()->toIso8601String(),
-            'total_patients' => count($results),
-            'specialties_count' => count($grouped)
-        ], 200);
-
-    } catch (\Exception $e) {
-        // Log the error
-        Log::error('Error in getwaitinglist: ' . $e->getMessage(), [
-            'event_id' => $eventId ?? null,
-            'line' => $e->getLine(),
-            'file' => $e->getFile()
-        ]);
-
-        // Return error with details
-        return response()->json([
-            'message' => 'Server error',
-            'error' => $e->getMessage(),
-            'line' => $e->getLine(),
-            'data' => []
-        ], 500);
-    }
-}
+  
     /**
      * Delete all appointments and reset system
      */
@@ -331,7 +222,7 @@ public function Special($id)
 {
     $user_role = Auth::user()->role_id;
     
-    if (!in_array($user_role, [1, 4])) {
+    if (!in_array($user_role, [1, 3])) {
         return response()->json([
             'success' => false,
             'message' => 'You are not authorized'
@@ -595,7 +486,7 @@ public function Absent($id)
     
     // Get max from Present, Waiting, Commingsoon (not Absent, Pending, Completed)
     $maxPosition = Appointment::where('event_specialty_id', $eventSpecialty) // Changed from whereIn
-        ->whereIn('status', ['Present', 'Waiting', 'Commingsoon'])
+        ->whereIn('status', ['Present', 'Waiting'])
         ->where('id', '!=', $id)
         ->max('orderList');
 
@@ -715,19 +606,14 @@ public function Absent($id)
 
         return $this->GetWaitingListBySpeciality($event->id, $specialityId);
     }
-
 /**
- * Get waiting list for public display (NO AUTHENTICATION REQUIRED)
- * Returns patient info including sex field for filtering
- * 
- * @param Request $request
- * @return \Illuminate\Http\JsonResponse
+ * Get waiting list (with CommingSoon appointments highlighted)
  */
-public function getPublicWaitingList(Request $request)
+public function getwaitinglist(Request $request, $id = null)
 {
-    $eventId = $request->query('event_id') ?? $request->input('event_id');
-    
     try {
+        $eventId = $id ?? $request->query('event_id') ?? $request->input('event_id');
+        
         if (!$eventId) {
             return response()->json([
                 'message' => 'No event ID provided',
@@ -735,7 +621,6 @@ public function getPublicWaitingList(Request $request)
             ], 400);
         }
 
-        // Find event
         $event = Event::find($eventId);
         
         if (!$event) {
@@ -746,16 +631,16 @@ public function getPublicWaitingList(Request $request)
             ], 404);
         }
 
-        // Get appointments using DB query - includes sex field
+        // Get appointments with BOTH Present and CommingSoon status
         $results = DB::table('appointments')
             ->join('event_specialties', 'appointments.event_specialty_id', '=', 'event_specialties.id')
             ->join('specialties', 'event_specialties.specialty_id', '=', 'specialties.id')
             ->where('event_specialties.event_id', $eventId)
-            ->where('appointments.status', 'Present')
+            ->whereIn('appointments.status', ['Present', 'CommingSoon']) // Include both statuses
             ->select(
                 'appointments.patient_id',
                 'appointments.full_name',
-                'appointments.sex',           // Include sex field
+                'appointments.status',        // Include status
                 'appointments.orderList',
                 'specialties.id as specialty_id',
                 'specialties.name as specialty_name'
@@ -778,16 +663,113 @@ public function getPublicWaitingList(Request $request)
                 $grouped[$specialtyId][] = [
                     'patient_id' => $row->patient_id,
                     'full_name' => $row->full_name,
-                    'sex' => $row->sex,          // Include sex in response
                     'order' => $row->orderList ?? 0,
                     'position' => count($grouped[$specialtyId]) + 1,
-                    'is_priority' => ($row->orderList ?? 0) === 0,
-                    'status' => 'Present'
+                    'is_priority' => false,
+                    'is_special' => false,
+                    'status' => $row->status,  // Include status
+                    'is_coming_soon' => $row->status === 'Commingsoon' // Flag for easy frontend check
                 ];
             }
         }
 
-        // Return response
+        return response()->json([
+            'data' => $grouped,
+            'event' => [
+                'id' => $event->id,
+                'name' => $event->name,
+                'is_current' => isset($event->is_current) ? (bool)$event->is_current : false
+            ],
+            'timestamp' => now()->toIso8601String(),
+            'total_patients' => count($results),
+            'specialties_count' => count($grouped)
+        ], 200);
+
+    } catch (\Exception $e) {
+        Log::error('Error in getwaitinglist: ' . $e->getMessage(), [
+            'event_id' => $eventId ?? null,
+            'line' => $e->getLine(),
+            'file' => $e->getFile()
+        ]);
+
+        return response()->json([
+            'message' => 'Server error',
+            'error' => $e->getMessage(),
+            'line' => $e->getLine(),
+            'data' => []
+        ], 500);
+    }
+}
+
+/**
+ * Get waiting list for public display (NO AUTHENTICATION REQUIRED)
+ * Returns patient info including sex field and status for filtering
+ */
+public function getPublicWaitingList(Request $request)
+{
+    $eventId = $request->query('event_id') ?? $request->input('event_id');
+    
+    try {
+        if (!$eventId) {
+            return response()->json([
+                'message' => 'No event ID provided',
+                'data' => []
+            ], 400);
+        }
+
+        $event = Event::find($eventId);
+        
+        if (!$event) {
+            return response()->json([
+                'message' => 'Event not found',
+                'data' => [],
+                'event' => null
+            ], 404);
+        }
+
+        // Get appointments with BOTH Present and CommingSoon status
+        $results = DB::table('appointments')
+            ->join('event_specialties', 'appointments.event_specialty_id', '=', 'event_specialties.id')
+            ->join('specialties', 'event_specialties.specialty_id', '=', 'specialties.id')
+            ->where('event_specialties.event_id', $eventId)
+            ->whereIn('appointments.status', ['Present', 'CommingSoon']) // Include both statuses
+            ->select(
+                'appointments.patient_id',
+                'appointments.full_name',
+                'appointments.sex',
+                'appointments.status',        // Include status
+                'appointments.orderList',
+                'specialties.id as specialty_id',
+                'specialties.name as specialty_name'
+            )
+            ->orderBy('specialties.id')
+            ->orderBy('appointments.orderList')
+            ->get();
+
+        // Group by specialty and take first 10
+        $grouped = [];
+        foreach ($results as $row) {
+            $specialtyId = $row->specialty_id;
+            
+            if (!isset($grouped[$specialtyId])) {
+                $grouped[$specialtyId] = [];
+            }
+            
+            // Only take first 10 per specialty
+            if (count($grouped[$specialtyId]) < 10) {
+                $grouped[$specialtyId][] = [
+                    'patient_id' => $row->patient_id,
+                    'full_name' => $row->full_name,
+                    'sex' => $row->sex,
+                    'order' => $row->orderList ?? 0,
+                    'position' => count($grouped[$specialtyId]) + 1,
+                    'is_priority' => ($row->orderList ?? 0) === 0,
+                    'status' => $row->status,  // Include status
+                    'is_coming_soon' => $row->status === 'Commingsoon' // Flag for easy frontend check
+                ];
+            }
+        }
+
         return response()->json([
             'data' => $grouped,
             'event' => [

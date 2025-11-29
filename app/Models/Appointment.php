@@ -29,7 +29,9 @@ class Appointment extends Model
         'comment',
         'status',
         'is_special',
-        'is_test', // NEW
+        'is_test',
+        'is_reminded', // NEW
+        'reminded_at', // NEW
         'archived_at',
         'archived_reason',
         'medical_documents',
@@ -38,7 +40,9 @@ class Appointment extends Model
     protected $casts = [
         'birthday' => 'date',
         'is_special' => 'boolean',
-        'is_test' => 'boolean', // NEW
+        'is_test' => 'boolean',
+        'is_reminded' => 'boolean', // NEW
+        'reminded_at' => 'datetime', // NEW
         'archived_at' => 'datetime',
         'medical_documents' => 'array',
     ];
@@ -117,5 +121,21 @@ class Appointment extends Model
     public function scopeTestOnly($query)
     {
         return $query->where('is_test', true);
+    }
+
+    /**
+     * Scope to get reminded appointments
+     */
+    public function scopeReminded($query)
+    {
+        return $query->where('is_reminded', true);
+    }
+
+    /**
+     * Scope to get not reminded appointments
+     */
+    public function scopeNotReminded($query)
+    {
+        return $query->where('is_reminded', false);
     }
 }
