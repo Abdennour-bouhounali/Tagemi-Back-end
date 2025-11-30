@@ -384,6 +384,17 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/appointments/reminder-stats/{eventId}', [AppointmentController::class, 'getReminderStats']);
 });
 
+Route::middleware('auth:sanctum')->group(function () {
+    // Mark appointment as evaluated
+    Route::post('/appointments/{id}/mark-evaluated', [AppointmentController::class, 'markAsEvaluated']);
+    
+    // Mark multiple appointments as evaluated
+    Route::post('/appointments/mark-multiple-evaluated', [AppointmentController::class, 'markMultipleAsEvaluated']);
+    
+    // Get evaluation statistics
+    Route::get('/appointments/evaluated-stats/{eventId}', [AppointmentController::class, 'getEvaluatedStats']);
+});
+
 
 // Dans routes/api.php
 

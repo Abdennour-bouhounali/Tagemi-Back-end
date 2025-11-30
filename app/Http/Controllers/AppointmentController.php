@@ -2878,4 +2878,55 @@ private function findFirstAvailableSlot($eventSpecialtyId)
             ], 500);
         }
     }
+// In AppointmentController.php - make sure methods use is_evaluated
+public function markMultipleAsEvaluated(Request $request)
+{
+    $request->validate([
+        'patient_id' => 'required',
+        'event_id' => 'required',
+    ]);
+
+    try {
+        $updated = Appointment::where('patient_id', $request->patient_id)
+            ->where('event_id', $request->event_id)
+            ->update([
+                'is_evaluated' => true,  // Changed from is_evaluation
+                'evaluated_at' => now(),
+            ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => "تم تحديث {$updated} موعد بنجاح",
+            'updated_count' => $updated
+        ]);
+    } catch (\Exception $e) {
+        return response()->json([
+            'success' => false,
+            'message' => 'حدث خطأ أثناء التحديث: ' . $e->getMessage()
+        ], 500);
+    }
+}
+
+public function getEvaluatedStats($eventId)
+{
+    try {
+        $stats = Appointment::where('event_id', $eventId)
+            ->select(
+                DB::raw('COUNT(DISTINCT patient_id) as total'),
+                DB::raw('COUNT(DISTINCT CASE WHEN is_evaluated = 1 THEN patient_id END) as evaluated'),  // Changed
+                DB::raw('COUNT(DISTINCT CASE WHEN is_evaluated = 0 OR is_evaluated IS NULL THEN patient_id END) as not_evaluated')  // Changed
+            )
+            ->first();
+
+        return response()->json([
+            'success' => true,
+            'stats' => $stats
+        ]);
+    } catch (\Exception $e) {
+        return response()->json([
+            'success' => false,
+            'message' => 'حدث خطأ أثناء جلب الإحصائيات: ' . $e->getMessage()
+        ], 500);
+    }
+}
 }

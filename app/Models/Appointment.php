@@ -32,6 +32,8 @@ class Appointment extends Model
         'is_test',
         'is_reminded', // NEW
         'reminded_at', // NEW
+        'is_evaluated',      // Make sure it's is_evaluated, not is_evaluation
+        'evaluated_at',
         'archived_at',
         'archived_reason',
         'medical_documents',
@@ -43,6 +45,8 @@ class Appointment extends Model
         'is_test' => 'boolean',
         'is_reminded' => 'boolean', // NEW
         'reminded_at' => 'datetime', // NEW
+        'is_evaluated' => 'boolean',      // <--- NEW
+        'evaluated_at' => 'datetime', // <--- NEW
         'archived_at' => 'datetime',
         'medical_documents' => 'array',
     ];
@@ -137,5 +141,21 @@ class Appointment extends Model
     public function scopeNotReminded($query)
     {
         return $query->where('is_reminded', false);
+    }
+
+        /**
+     * Scope to get reminded appointments
+     */
+    public function scopeEvaluated($query)
+    {
+        return $query->where('is_evaluated', true);
+    }
+
+    /**
+     * Scope to get not reminded appointments
+     */
+    public function scopeNotEvaluated($query)
+    {
+        return $query->where('is_evaluated', false);
     }
 }
