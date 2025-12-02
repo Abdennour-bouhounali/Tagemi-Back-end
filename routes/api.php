@@ -396,7 +396,6 @@ Route::middleware('auth:sanctum')->group(function () {
 });
 
 
-// Dans routes/api.php
 
 // Public routes (no authentication required)
 Route::prefix('evaluations')->group(function () {

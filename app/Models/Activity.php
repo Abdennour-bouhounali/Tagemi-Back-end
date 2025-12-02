@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Facades\Auth;
 
 class Activity extends Model
 {
@@ -22,6 +23,8 @@ class Activity extends Model
         'participants_count',
         'beneficiaries_count',
         'featured',
+        'created_by',
+        'updated_by',
     ];
 
     protected $casts = [
@@ -32,6 +35,29 @@ class Activity extends Model
     ];
 
     protected $with = ['media'];
+
+    /**
+     * Boot method to automatically set created_by and updated_by
+     */
+    protected static function boot()
+    {
+        parent::boot();
+
+        // Automatically set created_by when creating
+        static::creating(function ($model) {
+            if (Auth::check()) {
+                $model->created_by = Auth::id();
+                $model->updated_by = Auth::id();
+            }
+        });
+
+        // Automatically set updated_by when updating
+        static::updating(function ($model) {
+            if (Auth::check()) {
+                $model->updated_by = Auth::id();
+            }
+        });
+    }
 
     /**
      * Get the type that owns the activity.
@@ -47,6 +73,22 @@ class Activity extends Model
     public function media()
     {
         return $this->hasMany(ActivityMedia::class)->orderBy('order');
+    }
+
+    /**
+     * Get the user who created the activity.
+     */
+    public function creator()
+    {
+        return $this->belongsTo(User::class, 'created_by');
+    }
+
+    /**
+     * Get the user who last updated the activity.
+     */
+    public function updater()
+    {
+        return $this->belongsTo(User::class, 'updated_by');
     }
 
     /**

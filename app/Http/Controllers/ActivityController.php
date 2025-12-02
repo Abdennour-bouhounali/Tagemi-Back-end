@@ -17,68 +17,68 @@ class ActivityController extends Controller
         $this->mediaService = $mediaService;
     }
 
-    /**
-     * Display a listing of all activities.
-     */
-    public function index(Request $request)
-    {
-        $query = Activity::with(['media', 'type']);
+   /**
+ * Display a listing of all activities.
+ */
+public function index(Request $request)
+{
+    $query = Activity::with(['media', 'type', 'creator', 'updater']);
 
-        // Filter by status
-        if ($request->has('status')) {
-            $query->status($request->status);
-        }
-
-        // Filter by featured
-        if ($request->has('featured') && $request->featured) {
-            $query->featured();
-        }
-
-        // Filter by type
-        if ($request->has('type_id')) {
-            $query->byType($request->type_id);
-        }
-
-        // Sort by
-        $sortBy = $request->get('sort_by', 'created_at');
-        $sortOrder = $request->get('sort_order', 'desc');
-        $query->orderBy($sortBy, $sortOrder);
-
-        // Paginate or get all
-        if ($request->has('per_page')) {
-            $activities = $query->paginate($request->per_page);
-        } else {
-            $activities = $query->get();
-        }
-
-        return response()->json($activities);
+    // Filter by status
+    if ($request->has('status')) {
+        $query->status($request->status);
     }
 
-    /**
-     * Display activities by type.
-     */
-    public function showByType($typeId)
-    {
-        $activities = Activity::with(['media', 'type'])
-            ->byType($typeId)
-            ->orderBy('created_at', 'desc')
-            ->get();
-
-        return response()->json($activities);
+    // Filter by featured
+    if ($request->has('featured') && $request->featured) {
+        $query->featured();
     }
 
-    /**
-     * Display the specified activity.
-     */
-    public function show($id)
-    {
-        $activity = Activity::with(['media', 'type'])->findOrFail($id);
-        
-        // Add media statistics
-        $activity->media_stats = $this->mediaService->getMediaStats($activity);
-        
-        return response()->json($activity);
+    // Filter by type
+    if ($request->has('type_id')) {
+        $query->byType($request->type_id);
     }
+
+    // Sort by
+    $sortBy = $request->get('sort_by', 'created_at');
+    $sortOrder = $request->get('sort_order', 'desc');
+    $query->orderBy($sortBy, $sortOrder);
+
+    // Paginate or get all
+    if ($request->has('per_page')) {
+        $activities = $query->paginate($request->per_page);
+    } else {
+        $activities = $query->get();
+    }
+
+    return response()->json($activities);
+}
+
+/**
+ * Display activities by type.
+ */
+public function showByType($typeId)
+{
+    $activities = Activity::with(['media', 'type', 'creator', 'updater'])
+        ->byType($typeId)
+        ->orderBy('created_at', 'desc')
+        ->get();
+
+    return response()->json($activities);
+}
+
+/**
+ * Display the specified activity.
+ */
+public function show($id)
+{
+    $activity = Activity::with(['media', 'type', 'creator', 'updater'])->findOrFail($id);
+    
+    // Add media statistics
+    $activity->media_stats = $this->mediaService->getMediaStats($activity);
+    
+    return response()->json($activity);
+}
 
 /**
  * Store a newly created activity in storage.
