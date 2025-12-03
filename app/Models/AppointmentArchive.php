@@ -15,21 +15,20 @@ class AppointmentArchive extends Model
     public $incrementing = false;
 
     protected $fillable = [
-        'id',
-        'event_id',
         'user_id',
         'event_specialty_id',
         'day_id',
         'hour_id',
         'doctor_id',
+        'event_id',
         'full_name',
         'birthday',
         'state',
         'city',
-        'sex',
+        'diseases',
         'phone',
         'phone2',
-        'diseases',
+        'sex',
         'patient_id',
         'specialty_order',
         'position',
@@ -37,22 +36,27 @@ class AppointmentArchive extends Model
         'comment',
         'status',
         'is_special',
+        'is_test',
+        'is_reminded', // NEW
+        'reminded_at', // NEW
+        'is_evaluated',      // Make sure it's is_evaluated, not is_evaluation
+        'evaluated_at',
         'archived_at',
         'archived_reason',
-        'medical_documents', // NEW
-        'created_at',
-        'updated_at',
+        'medical_documents',
     ];
 
     protected $casts = [
         'birthday' => 'date',
         'is_special' => 'boolean',
+        'is_test' => 'boolean',
+        'is_reminded' => 'boolean', // NEW
+        'reminded_at' => 'datetime', // NEW
+        'is_evaluated' => 'boolean',      // <--- NEW
+        'evaluated_at' => 'datetime', // <--- NEW
         'archived_at' => 'datetime',
-        'created_at' => 'datetime',
-        'updated_at' => 'datetime',
-        'medical_documents' => 'array', // NEW
+        'medical_documents' => 'array',
     ];
-
     // ... rest of the relationships and methods remain the same
     
     public function user()

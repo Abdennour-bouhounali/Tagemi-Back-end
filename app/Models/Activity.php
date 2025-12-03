@@ -19,6 +19,7 @@ class Activity extends Model
         'description_ar',
         'location',
         'event_date',
+        'event_end_date', // new
         'status',
         'participants_count',
         'beneficiaries_count',
@@ -29,6 +30,7 @@ class Activity extends Model
 
     protected $casts = [
         'event_date' => 'date',
+        'event_end_date' => 'date',  // new
         'featured' => 'boolean',
         'participants_count' => 'integer',
         'beneficiaries_count' => 'integer',
