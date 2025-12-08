@@ -363,7 +363,7 @@ public function Commingsoon(Request $request, $id)
 
         // Get max from Present, Waiting, Commingsoon
         $maxPosition = Appointment::whereIn('event_specialty_id', $eventSpecialtyIds)
-            ->whereIn('status', ['Present', 'Waiting', 'Commingsoon'])
+            ->whereIn('status', ['Present'])
             ->where('id', '!=', $id)
             ->max('orderList');
 

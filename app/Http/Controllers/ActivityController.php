@@ -65,86 +65,114 @@ class ActivityController extends Controller
         return response()->json($activity);
     }
 
-    public function store(Request $request)
-    {
-        $validator = Validator::make($request->all(), [
-            'type_id' => 'required|exists:types,id',
-            'title_en' => 'required|string|max:255',
-            'title_ar' => 'required|string|max:255',
-            'description_en' => 'nullable|string',
-            'description_ar' => 'nullable|string',
-            'location' => 'nullable|string|max:255',
-            'event_date' => 'nullable|date',
-            'event_end_date' => 'nullable|date|after_or_equal:event_date', // NEW: Added validation
-            'status' => 'required|in:upcoming,ongoing,completed,cancelled',
-            'participants_count' => 'nullable|integer|min:0',
-            'beneficiaries_count' => 'nullable|integer|min:0',
-            'featured' => 'nullable|boolean',
-            'media.*' => 'nullable|file|mimes:jpeg,jpg,png,gif,webp,mp4,avi,mov,wmv|max:51200',
-            'media_types' => 'nullable|array',
+public function store(Request $request)
+{
+    \Log::info('Store Activity called', ['request' => $request->all()]);
+
+    $validator = Validator::make($request->all(), [
+        'type_id' => 'required|exists:types,id',
+        'title_en' => 'required|string|max:255',
+        'title_ar' => 'required|string|max:255',
+        'description_en' => 'nullable|string',
+        'description_ar' => 'nullable|string',
+        'location' => 'nullable|string|max:255',
+        'event_date' => 'nullable|date',
+        'event_end_date' => 'nullable|date|after_or_equal:event_date',
+        'status' => 'required|in:upcoming,ongoing,completed,cancelled',
+        'participants_count' => 'nullable|integer|min:0',
+        'beneficiaries_count' => 'nullable|integer|min:0',
+        'featured' => 'nullable|boolean',
+        'media.*' => 'nullable|file|mimes:jpeg,jpg,png,gif,webp,mp4,avi,mov,wmv|max:51200',
+        'media_types' => 'nullable|array',
+    ]);
+
+    if ($validator->fails()) {
+        \Log::warning('Validation failed', [
+            'errors' => $validator->errors()->toArray()
         ]);
 
-        if ($validator->fails()) {
-            return response()->json([
-                'message' => 'Validation failed',
-                'errors' => $validator->errors()
-            ], 422);
-        }
+        return response()->json([
+            'message' => 'Validation failed',
+            'errors' => $validator->errors()
+        ], 422);
+    }
 
-        try {
-            DB::beginTransaction();
+    try {
+        \Log::info('Starting transaction');
 
-            $activity = Activity::create([
-                'type_id' => $request->type_id,
-                'title_en' => $request->title_en,
-                'title_ar' => $request->title_ar,
-                'description_en' => $request->description_en,
-                'description_ar' => $request->description_ar,
-                'location' => $request->location,
-                'event_date' => $request->event_date,
-                'event_end_date' => $request->event_end_date, // NEW: Added field
-                'status' => $request->status,
-                'participants_count' => $request->participants_count ?? 0,
-                'beneficiaries_count' => $request->beneficiaries_count ?? 0,
-                'featured' => filter_var($request->featured, FILTER_VALIDATE_BOOLEAN),
+        DB::beginTransaction();
+
+        \Log::info('Creating activity...');
+        $activity = Activity::create([
+            'type_id' => $request->type_id,
+            'title_en' => $request->title_en,
+            'title_ar' => $request->title_ar,
+            'description_en' => $request->description_en,
+            'description_ar' => $request->description_ar,
+            'location' => $request->location,
+            'event_date' => $request->event_date,
+            'event_end_date' => $request->event_end_date,
+            'status' => $request->status,
+            'participants_count' => $request->participants_count ?? 0,
+            'beneficiaries_count' => $request->beneficiaries_count ?? 0,
+            'featured' => filter_var($request->featured, FILTER_VALIDATE_BOOLEAN),
+        ]);
+
+        \Log::info('Activity created', ['activity_id' => $activity->id]);
+
+        if ($request->hasFile('media')) {
+            \Log::info('Media files detected', [
+                'media_count' => count($request->file('media'))
             ]);
 
-            if ($request->hasFile('media')) {
-                $mediaFiles = $request->file('media');
-                $mediaTypes = $request->input('media_types', []);
-                
-                $mediaArray = [];
-                foreach ($mediaFiles as $index => $file) {
-                    $mediaArray[] = [
-                        'file' => $file,
-                        'type' => $mediaTypes[$index] ?? 'image'
-                    ];
-                }
-                
-                $this->mediaService->uploadActivityMedia($activity, $mediaArray);
+            $mediaFiles = $request->file('media');
+            $mediaTypes = $request->input('media_types', []);
+
+            $mediaArray = [];
+
+            foreach ($mediaFiles as $index => $file) {
+                \Log::info("Processing media file #{$index}", [
+                    'original_name' => $file->getClientOriginalName(),
+                    'type' => $mediaTypes[$index] ?? 'image',
+                ]);
+
+                $mediaArray[] = [
+                    'file' => $file,
+                    'type' => $mediaTypes[$index] ?? 'image'
+                ];
             }
 
-            DB::commit();
-
-            $activity->load(['media', 'type']);
-
-            return response()->json([
-                'message' => 'Activity created successfully',
-                'data' => $activity
-            ], 201);
-
-        } catch (\Exception $e) {
-            DB::rollBack();
-            
-            \Log::error('Activity creation failed: ' . $e->getMessage());
-            \Log::error($e->getTraceAsString());
-            
-            return response()->json([
-                'message' => 'Failed to create activity',
-                'error' => config('app.debug') ? $e->getMessage() : 'An error occurred'
-            ], 500);
+            \Log::info("Uploading media files...");
+            $this->mediaService->uploadActivityMedia($activity, $mediaArray);
+            \Log::info("Media upload completed.");
+        } else {
+            \Log::info('No media uploaded');
         }
+
+        DB::commit();
+
+        \Log::info('Transaction committed successfully');
+
+        $activity->load(['media', 'type']);
+
+        return response()->json([
+            'message' => 'Activity created successfully',
+            'data' => $activity
+        ], 201);
+
+    } catch (\Exception $e) {
+        DB::rollBack();
+
+        \Log::error('Activity creation failed: ' . $e->getMessage());
+        \Log::error($e->getTraceAsString());
+
+        return response()->json([
+            'message' => 'Failed to create activity',
+            'error' => config('app.debug') ? $e->getMessage() : 'An error occurred'
+        ], 500);
     }
+}
+
 
     public function update(Request $request, $id)
     {
