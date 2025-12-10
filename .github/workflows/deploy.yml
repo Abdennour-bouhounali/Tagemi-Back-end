@@ -1,40 +1,60 @@
-name: Deploy React App and Laravel Backend to Hostinger
+name: Deploy to VPS
 
 on:
   push:
-    branches:
-      - main
+    branches: [ "main" ]
 
 jobs:
-  deploy-backend:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
+      # 1. Checkout Code
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
-      - name: Add Hostinger to known_hosts
-        run: |
-          mkdir -p ~/.ssh
-          ssh-keyscan -p ${{ secrets.HOSTINGER_PORT }} ${{ secrets.HOSTINGER_HOST }} >> ~/.ssh/known_hosts
-
-      - name: Set up SSH
-        uses: webfactory/ssh-agent@v0.5.3
+      # 2. Setup Node & Build Frontend (Vite/React)
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          ssh-private-key: ${{ secrets.HOSTINGER_PRIVATE_KEY }}
+          node-version: '20' # Use your local node version
 
-      - name: Deploy Laravel Backend to Hostinger
-        run: |
-          # Copy the backend filess
-          scp -P ${{ secrets.HOSTINGER_PORT }} -r * ${{ secrets.HOSTINGER_USERNAME }}@${{ secrets.HOSTINGER_HOST }}:/home/u412486568/domains/api.tagemi-foundation.org
+      - name: Install NPM dependencies
+        run: npm ci
 
-          # SSH into the server to run Laravel commands
-          ssh -p ${{ secrets.HOSTINGER_PORT }} ${{ secrets.HOSTINGER_USERNAME }}@${{ secrets.HOSTINGER_HOST }} << 'EOF'
-            cd /home/u412486568/domains/api.tagemi-foundation.org
-            composer.phar install --no-dev  # Install production dependencies
-            php artisan migrate --force  # Run migrations
-            php artisan cache:clear  # Clear application cache
-            php artisan config:cache  # Cache the configuration
-            php artisan route:cache  # Cache the routes
-            php artisan view:clear  # Clear view cache
-          EOF
+      - name: Build Frontend Assets
+        run: npm run build
+
+      # 3. Copy Built Assets to VPS (Prevent VPS RAM crash)
+      - name: Upload Build Artifacts via SCP
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.SSH_KEY }}
+          source: "public/build" # The folder Vite generates
+          target: "/var/www/Tagemi-Back-end" # Your project path on VPS
+
+      # 4. Deploy Backend & Run Laravel Commands via SSH
+      - name: Deploy Backend via SSH
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            cd /var/www/Tagemi-Back-end
+            
+            # Pull latest backend code
+            git pull origin main
+            
+            # Install/Update PHP dependencies
+            export COMPOSER_ALLOW_SUPERUSER=1
+            composer install --no-dev --optimize-autoloader
+            
+            # Run Migrations (Force is needed for production)
+            php artisan migrate --force
+            
+            # Clear/Rebuild Caches
+            php artisan optimize
+            php artisan view:cache
