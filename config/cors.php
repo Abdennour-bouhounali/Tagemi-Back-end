@@ -1,34 +1,48 @@
 <?php
 
 return [
+    /*
+     * Paths that should have CORS enabled
+     */
+    'paths' => ['api/*', 'sanctum/csrf-cookie'],
 
     /*
-    |--------------------------------------------------------------------------
-    | Cross-Origin Resource Sharing (CORS) Configuration
-    |--------------------------------------------------------------------------
-    |
-    | Here you may configure your settings for cross-origin resource sharing
-    | or "CORS". This determines what cross-origin operations may execute
-    | in web browsers. You are free to adjust these settings as needed.
-    |
-    | To learn more: https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
-    |
-    */
-
-    'paths' => ['api/*', 'sanctum/csrf-cookie', 'storage/*'],
-
+     * Allowed HTTP methods
+     */
     'allowed_methods' => ['*'],
 
-    'allowed_origins' => ['http://localhost:5173', 'http://localhost:3000'],
+    /*
+     * Allowed origins - IMPORTANT: Add your production domains
+     */
+    'allowed_origins' => [
+        'https://tagemi-foundation.org',
+        'https://www.tagemi-foundation.org',
+        'http://localhost:3000',
+        'http://localhost:5173',
+    ],
 
+    /*
+     * Patterns for allowed origins (alternative to listing each domain)
+     */
     'allowed_origins_patterns' => [],
 
+    /*
+     * Allowed headers
+     */
     'allowed_headers' => ['*'],
 
+    /*
+     * Headers to expose
+     */
     'exposed_headers' => [],
 
-    'max_age' => 0,
+    /*
+     * Maximum cache time for preflight requests
+     */
+    'max_age' => 86400, // 24 hours for production
 
+    /*
+     * Allow credentials (cookies, authorization headers)
+     */
     'supports_credentials' => true,
-
 ];
