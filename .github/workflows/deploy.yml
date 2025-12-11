@@ -22,11 +22,11 @@ jobs:
 
     - name: Deploy to VPS
       env:
-        VPS_HOST: ${{ secrets.OCTENIUM_HOST }}
-        VPS_USER: ${{ secrets.OCTENIUM_USER }}
-        VPS_PORT: ${{ secrets.OCTENIUM_SSH_PORT }}
+        OCTENIUM_HOST: ${{ secrets.OCTENIUM_HOST }}
+        OCTENIUM_USER: ${{ secrets.OCTENIUM_USER }}
+        OCTENIUM_SSH_PORT: ${{ secrets.OCTENIUM_SSH_PORT }}
       run: |
-        ssh -o StrictHostKeyChecking=no -p ${VPS_PORT:-22} $VPS_USER@$VPS_HOST << 'EOF'
+        ssh -o StrictHostKeyChecking=no -p ${OCTENIUM_SSH_PORT:-22} $OCTENIUM_USER@$OCTENIUM_HOST << 'EOF'
           cd /var/www/Tagemi-Back-end
 
           echo "Fetching latest code..."
