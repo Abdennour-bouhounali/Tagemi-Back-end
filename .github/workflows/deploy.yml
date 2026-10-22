@@ -45,9 +45,8 @@ jobs:
       run: composer install --no-interaction --prefer-dist --no-progress
 
     - name: Prepare application
-      run: |
-        cp .env.example .env
-        php artisan key:generate
+      # Throwaway key for the test run (.env.example has every line commented out)
+      run: echo "APP_KEY=base64:$(openssl rand -base64 32)" >> "$GITHUB_ENV"
 
     - name: Migrate a fresh database
       run: php artisan migrate --force
