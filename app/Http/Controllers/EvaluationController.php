@@ -44,7 +44,12 @@ public function store(Request $request)
     }
 
     try {
-        $data = $request->all();
+        // Only validated fields: is_processed / admin_notes etc. must not be settable by the public
+        $data = $validator->validated();
+        if (!empty($data['appointment_id'])
+            && !\App\Models\Appointment::whereKey($data['appointment_id'])->where('event_id', $data['event_id'])->exists()) {
+            $data['appointment_id'] = null;
+        }
         // Keep first specialty in old field for backward compatibility
         $data['specialty'] = $data['specialties'][0] ?? null;
         
@@ -62,7 +67,7 @@ public function store(Request $request)
     } catch (\Exception $e) {
         return response()->json([
             'message' => 'حدث خطأ أثناء حفظ التقييم',
-            'error' => $e->getMessage()
+            'error' => config('app.debug') ? $e->getMessage() : null
         ], 500);
     }
 }

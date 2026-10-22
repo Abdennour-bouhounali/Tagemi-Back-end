@@ -14,12 +14,12 @@ return [
     /*
      * Allowed origins - IMPORTANT: Add your production domains
      */
-    'allowed_origins' => [
-        'https://tagemi-foundation.org',
-        'https://www.tagemi-foundation.org',
-        'http://localhost:3000',
-        'http://localhost:5173',
-    ],
+    // Comma-separated in CORS_ALLOWED_ORIGINS; set it in the local .env to
+    // allow http://localhost:5173 during development.
+    'allowed_origins' => array_filter(array_map('trim', explode(',', env(
+        'CORS_ALLOWED_ORIGINS',
+        'https://tagemi-foundation.org,https://www.tagemi-foundation.org'
+    )))),
 
     /*
      * Patterns for allowed origins (alternative to listing each domain)

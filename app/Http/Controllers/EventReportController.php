@@ -233,10 +233,12 @@ class EventReportController extends Controller
     private function getEventStatistics($event)
     {
         $totalAppointments = $event->archivedAppointments()->count();
-        $completedAppointments = $event->archivedAppointments()
-            ->where('status', 'completed')->count();
-        $cancelledAppointments = $event->archivedAppointments()
-            ->where('status', 'cancelled')->count();
+        // "Cancelled" in the report = booked but never came (VisitStatistics outcomes)
+        $outcomes = $event->archivedAppointments()->pluck('status')
+            ->map(fn ($status) => \App\Support\VisitStatistics::outcomeOf($status))
+            ->countBy();
+        $completedAppointments = $outcomes->get('Completed', 0);
+        $cancelledAppointments = $outcomes->get('Pending', 0);
 
         return [
             'total_appointments' => $totalAppointments,

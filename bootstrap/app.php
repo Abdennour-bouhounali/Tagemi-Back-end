@@ -15,6 +15,8 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware) {
         $middleware->alias([
             'cros' => \App\Http\Middleware\Cors::class,
+            'role' => \App\Http\Middleware\EnsureUserHasRole::class,
+            'event.access' => \App\Http\Middleware\EnsureEventAccess::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {

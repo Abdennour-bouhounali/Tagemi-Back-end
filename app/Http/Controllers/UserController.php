@@ -246,6 +246,11 @@ public function index()
             
             $user->update($updateData);
 
+            if (isset($updateData['password'])) {
+                // Password changed by an admin: revoke the user's existing sessions
+                $user->tokens()->delete();
+            }
+
             return response()->json([
                 'message' => 'تم تحديث بيانات المستخدم بنجاح',
                 'user' => $user->load(['role', 'event'])
@@ -349,10 +354,11 @@ public function index()
                 ], 403);
             }
             
-            $user->update([
+            // role_id/event_id are guarded from mass assignment
+            $user->forceFill([
                 'event_id' => $request->event_id,
                 'role_id' => $request->role_id
-            ]);
+            ])->save();
 
             // Update event admin columns if applicable
             if ($request->event_id) {
@@ -398,6 +404,12 @@ public function index()
     {
         try {
             $user = User::findOrFail($userId);
+
+            if ($user->isSuperAdmin()) {
+                return response()->json([
+                    'message' => 'لا يمكن تغيير مهمة المدير العام'
+                ], 403);
+            }
             
             // Clear event admin references
             if ($user->event_id) {
@@ -415,10 +427,10 @@ public function index()
                 }
             }
             
-            $user->update([
+            $user->forceFill([
                 'event_id' => null,
-                'role_id' => 2 // Reset to SimpleUser
-            ]);
+                'role_id' => User::ROLE_SIMPLE_USER
+            ])->save();
 
             return response()->json([
                 'message' => 'تم إلغاء تعيين المستخدم بنجاح',

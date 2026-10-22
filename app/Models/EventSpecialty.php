@@ -19,11 +19,13 @@ class EventSpecialty extends Model
         'addition_capacity',
         'flag',
         'is_active',
+        'has_dilatation',
     ];
 
     protected $casts = [
         'is_saturated' => 'boolean',
         'is_active' => 'boolean',
+        'has_dilatation' => 'boolean',
     ];
 
     protected $attributes = [

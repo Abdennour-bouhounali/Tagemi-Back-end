@@ -119,8 +119,7 @@ class AppointmentArchive extends Model
             return [];
         }
 
-        return array_map(function($path) {
-            return asset('storage/' . $path);
-        }, $this->medical_documents);
+        // Archived documents are kept on disk but are no longer exposed by URL
+        return [];
     }
 }

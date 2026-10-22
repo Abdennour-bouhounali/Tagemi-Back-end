@@ -7,6 +7,36 @@ use Illuminate\Database\Eloquent\Model;
 
 class Appointment extends Model
 {
+    // Medical documents live on the private disk (storage/app) and are only
+    // served through the authorized documents endpoint. Files uploaded before
+    // this change may still be on the 'public' disk (see DocumentController).
+    public const DOCUMENTS_DISK = 'local';
+
+    protected static function booted(): void
+    {
+        // Kept in sync with the name/birthday; backs the unique index that
+        // stops the same person being booked twice for one specialty.
+        static::saving(function (Appointment $appointment) {
+            if ($appointment->isDirty(['full_name', 'birthday']) || !$appointment->identity_key) {
+                $appointment->identity_key = self::identityKey($appointment->full_name, $appointment->birthday);
+            }
+        });
+    }
+
+    /**
+     * Normalized "who is this person" key: Arabic spelling variants, diacritics,
+     * tatweel, extra spaces and letter case don't make a different person.
+     */
+    public static function identityKey($fullName, $birthday): string
+    {
+        $name = preg_replace('/[\x{064B}-\x{0652}\x{0670}\x{0640}]/u', '', (string) $fullName);
+        $name = strtr($name, ['أ' => 'ا', 'إ' => 'ا', 'آ' => 'ا', 'ٱ' => 'ا', 'ى' => 'ي', 'ة' => 'ه', 'ؤ' => 'و', 'ئ' => 'ي']);
+        $name = mb_strtolower(trim(preg_replace('/\s+/u', ' ', $name)));
+        $date = $birthday ? \Illuminate\Support\Carbon::parse($birthday)->format('Y-m-d') : '';
+
+        return sha1($name . '|' . $date);
+    }
+
     protected $fillable = [
         'user_id',
         'event_specialty_id',
@@ -42,6 +72,9 @@ class Appointment extends Model
     protected $casts = [
         'birthday' => 'date',
         'is_special' => 'boolean',
+        'is_priority' => 'boolean',
+        'dilatation_sent_at' => 'datetime',
+        'dilatation_started_at' => 'datetime',
         'is_test' => 'boolean',
         'is_reminded' => 'boolean', // NEW
         'reminded_at' => 'datetime', // NEW
@@ -106,9 +139,9 @@ class Appointment extends Model
             return [];
         }
 
-        return array_map(function($path) {
-            return asset('storage/' . $path);
-        }, $this->medical_documents);
+        return array_map(function ($index) {
+            return url("/api/appointments/{$this->id}/documents/{$index}");
+        }, array_keys(array_values($this->medical_documents)));
     }
 
      /**

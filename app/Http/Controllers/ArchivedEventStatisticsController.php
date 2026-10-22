@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers;
 
+use App\Support\VisitStatistics;
+
 use Illuminate\Http\Request;
 use App\Models\Event;
 use App\Models\AppointmentArchive;
@@ -32,8 +34,8 @@ class ArchivedEventStatisticsController extends Controller
                 'specialties.name',
                 DB::raw('COUNT(*) as total_appointments'),
                 DB::raw('SUM(CASE WHEN appointments_archive.status = "Completed" THEN 1 ELSE 0 END) as completed'),
-                DB::raw('SUM(CASE WHEN appointments_archive.status = "Cancelled" THEN 1 ELSE 0 END) as cancelled'),
-                DB::raw('SUM(CASE WHEN appointments_archive.status = "NoShow" THEN 1 ELSE 0 END) as no_show'),
+                // Same outcomes as VisitStatistics::outcomeOf()
+                DB::raw('SUM(CASE WHEN appointments_archive.status NOT IN ("Completed", "Pending") THEN 1 ELSE 0 END) as not_examined'),
                 DB::raw('SUM(CASE WHEN appointments_archive.status = "Pending" THEN 1 ELSE 0 END) as pending')
             )
             ->groupBy('specialties.id', 'specialties.name')
@@ -55,14 +57,7 @@ public function statusStats($eventId)
     
     $statusBreakdown = $appointments
         ->map(function ($appointment) {
-            // Normalize status to 3 categories
-            if ($appointment->status === 'Completed') {
-                $appointment->normalized_status = 'Completed';
-            } elseif ($appointment->status === 'Pending') {
-                $appointment->normalized_status = 'Pending';
-            } else {
-                $appointment->normalized_status = 'Waiting';
-            }
+            $appointment->normalized_status = VisitStatistics::outcomeOf($appointment->status);
             return $appointment;
         })
         ->groupBy('normalized_status')

@@ -11,6 +11,8 @@ use App\Models\Event;
 use App\Models\EventSpecialty;
 use App\Models\Specialty;
 use App\Models\User;
+use App\Support\VisitStatistics;
+use App\Exceptions\RuleException;
 use App\Models\Day;
 use App\Models\Hour;
 use App\Models\Doctor;
@@ -37,44 +39,15 @@ class EventController extends Controller
      */
     public function showWithStats($id)
     {
-        try {
-            $event = Event::with([
-                'eventSpecialties.specialty',
-                'eventSpecialties.appointments'
-            ])->findOrFail($id);
-            
-            // Calculate statistics
-            $totalAppointments = 0;
-            $presentCount = 0;
-            $absentCount = 0;
-            $pendingCount = 0;
-            
-            foreach ($event->eventSpecialties as $eventSpecialty) {
-                $appointments = $eventSpecialty->appointments;
-                $totalAppointments += $appointments->count();
-                $presentCount += $appointments->where('status', 'Present')->count();
-                $absentCount += $appointments->where('status', 'Absent')->count();
-                $pendingCount += $appointments->where('status', 'Pending')->count();
-            }
-            
-            return response()->json([
-                'event' => $event,
-                'statistics' => [
-                    'total_appointments' => $totalAppointments,
-                    'present' => $presentCount,
-                    'absent' => $absentCount,
-                    'pending' => $pendingCount,
-                    'specialties_count' => $event->eventSpecialties->count()
-                ]
-            ], 200);
-        } catch (\Exception $e) {
-            Log::error('Error fetching event with stats:', ['id' => $id, 'error' => $e->getMessage()]);
-            return response()->json([
-                'message' => 'فشل في تحميل إحصائيات الحدث',
-                'error' => config('app.debug') ? $e->getMessage() : 'خطأ داخلي'
-            ], 500);
-        }
+        $event = Event::with('eventSpecialties.specialty')->findOrFail($id);
+
+        return response()->json([
+            'event' => $event,
+            'statistics' => VisitStatistics::summarize($event->appointments()->get(['status', 'patient_id']))
+                + ['specialties_count' => $event->eventSpecialties->count()],
+        ], 200);
     }
+
     /**
      * Get admin credentials for an event
      */
@@ -182,6 +155,7 @@ class EventController extends Controller
             // Update Special Admin (from event)
             if ($event->special_admin_id && !in_array($event->special_admin_id, $updatedAdminIds)) {
                 User::where('id', $event->special_admin_id)
+                    ->where('role_id', '!=', User::ROLE_SUPER_ADMIN)
                     ->update(['password' => $hashedPassword]);
                 $updatedAdminIds[] = $event->special_admin_id;
                 $updatedAdminsCount++;
@@ -190,6 +164,7 @@ class EventController extends Controller
             // Update Recipient Admin (from event)
             if ($event->recipient_admin_id && !in_array($event->recipient_admin_id, $updatedAdminIds)) {
                 User::where('id', $event->recipient_admin_id)
+                    ->where('role_id', '!=', User::ROLE_SUPER_ADMIN)
                     ->update(['password' => $hashedPassword]);
                 $updatedAdminIds[] = $event->recipient_admin_id;
                 $updatedAdminsCount++;
@@ -198,10 +173,16 @@ class EventController extends Controller
             // Update Check Admin (from event)
             if ($event->check_admin_id && !in_array($event->check_admin_id, $updatedAdminIds)) {
                 User::where('id', $event->check_admin_id)
+                    ->where('role_id', '!=', User::ROLE_SUPER_ADMIN)
                     ->update(['password' => $hashedPassword]);
                 $updatedAdminIds[] = $event->check_admin_id;
                 $updatedAdminsCount++;
             }
+
+            // Log the old sessions out everywhere
+            \Laravel\Sanctum\PersonalAccessToken::where('tokenable_type', User::class)
+                ->whereIn('tokenable_id', $updatedAdminIds)
+                ->delete();
 
             return response()->json([
                 'message' => 'تم تحديث كلمات المرور بنجاح',
@@ -673,7 +654,8 @@ public function updateSaturationBatch(Request $request, $eventId)
         $eventSpecialty = EventSpecialty::where('event_id', $eventId)
             ->where('id', $specialtyId)
             ->firstOrFail();
-        
+
+        $this->refuseIfBooked($eventSpecialty->appointments(), 'لا يمكن حذف تخصص به مواعيد محجوزة');
         $eventSpecialty->delete();
         
         return response()->json([
@@ -714,20 +696,13 @@ public function updateSaturationBatch(Request $request, $eventId)
     public function statistics($id)
     {
         $event = Event::findOrFail($id);
+        $summary = VisitStatistics::summarize($event->appointments()->get(['status', 'patient_id']));
 
-        $stats = [
-            'total_appointments' => $event->appointments()->count(),
-            'pending' => $event->appointments()->where('status', 'Pending')->count(),
-            'confirmed' => $event->appointments()->where('status', 'Abcsent')->count(),
-            'completed' => $event->appointments()->where('status', 'Completed')->count(),
-            'cancelled' => $event->appointments()->where('status', 'Cancelled')->count(),
-            'available_slots' => $event->available_slots,
-            'is_ended' => !$event->is_active,
-            'is_ongoing' => $event->is_active,
-            // 'duration_days' => $event->duration_days,
-        ];
-
-        return response()->json($stats);
+        return response()->json($summary + [
+            'total_appointments' => $summary['total'],
+            'is_archived' => (bool) $event->is_archived,
+            'is_active' => (bool) $event->is_active,
+        ]);
     }
    
     /**
@@ -736,7 +711,10 @@ public function updateSaturationBatch(Request $request, $eventId)
 public function index()
 {
     try {
+        $user = request()->user();
+
         $events = Event::query()
+            ->when(!$user->isSuperAdmin(), fn ($q) => $q->whereKey($user->event_id))
             ->withCount('eventSpecialties')
             ->with(['eventSpecialties.days' => function($query) {
                 $query->select('event_specialty_id', 'day_date');
@@ -778,14 +756,38 @@ public function index()
 }
 
     /**
+     * Public event details for the booking form and the waiting-room screen.
+     * Contains no patient data and hides archived events.
+     */
+    public function publicShow($id)
+    {
+        $event = Event::with([
+            'eventSpecialties.specialty',
+            'eventSpecialties.days.hours'
+        ])
+            ->where('is_archived', false)
+            ->find($id);
+
+        if (!$event) {
+            return response()->json(['message' => 'الحدث غير موجود'], 404);
+        }
+
+        $event->makeHidden(['special_admin_id', 'recipient_admin_id', 'check_admin_id']);
+
+        return response()->json(['event' => $event], 200);
+    }
+
+    /**
      * Get single event details
      */
     public function show($id)
     {
         try {
+            // Only appointment counts here: patient rows are served by the
+            // event-scoped appointment endpoints, never with the event payload.
             $event = Event::with([
+                'eventSpecialties' => fn ($q) => $q->withCount('appointments'),
                 'eventSpecialties.specialty',
-                'eventSpecialties.appointments',
                 'eventSpecialties.days.hours'
             ])->findOrFail($id);
 
@@ -915,6 +917,7 @@ public function index()
         'specialties.*.doctors' => 'nullable|array',
         'specialties.*.doctors.*' => 'exists:doctors,id',
         'specialties.*.is_saturated' => 'nullable|boolean',
+        'specialties.*.has_dilatation' => 'nullable|boolean',
         'specialties.*.days' => 'required|array|min:1',
         'specialties.*.days.*.day_date' => 'required|date',
         'specialties.*.days.*.number_per_hour' => 'required|integer|min:1|max:400',
@@ -960,6 +963,7 @@ public function index()
                     'specialty_id' => $specData['id'],
                     'description' => $specData['description'] ?? null, // ADD THIS
                     'is_saturated' => $isSaturated,
+                    'has_dilatation' => (bool) ($specData['has_dilatation'] ?? false),
                     'max_number' => 100,
                     'start_time' => $specData['start_time'] ?? '08:00:00',
                     'addition_capacity' => 0,
@@ -1029,7 +1033,7 @@ public function index()
         Log::error('Event creation failed', [
             'error' => $e->getMessage(),
             'trace' => $e->getTraceAsString(),
-            'request_data' => $request->all()
+            'request_keys' => array_keys($request->all())
         ]);
 
         return response()->json([
@@ -1066,6 +1070,20 @@ public function index()
     ]);
     }
 
+/**
+ * Event editing never deletes bookings: removing a slot, day or specialty
+ * that still has appointments is refused (move or delete them first).
+ *
+ * @throws RuleException
+ */
+private function refuseIfBooked($appointmentsQuery, string $message): void
+{
+    $count = $appointmentsQuery->count();
+    if ($count > 0) {
+        throw new RuleException($message . " ({$count} موعد). انقل المواعيد أو احذفها أولاً.", 409);
+    }
+}
+
  /**
  * Update full event with specialties, days, and hours
  * 
@@ -1094,6 +1112,7 @@ public function updateFull(Request $request, $id)
         'specialties.*.doctors' => 'nullable|array',
         'specialties.*.doctors.*' => 'exists:doctors,id',
         'specialties.*.is_saturated' => 'nullable|boolean',
+        'specialties.*.has_dilatation' => 'nullable|boolean',
         'specialties.*.days' => 'required|array|min:1',
         'specialties.*.days.*.id' => 'nullable|integer',
         'specialties.*.days.*.day_date' => 'required|date',
@@ -1145,6 +1164,7 @@ public function updateFull(Request $request, $id)
                             'specialty_id' => $specData['id'],
                             'description' => $specData['description'] ?? '',
                             'is_saturated' => $isSaturated,
+                            'has_dilatation' => (bool) ($specData['has_dilatation'] ?? $eventSpecialty->has_dilatation),
                         ]);
                         
                         Log::info("Updated EventSpecialty ID: {$eventSpecialty->id}");
@@ -1272,6 +1292,12 @@ public function updateFull(Request $request, $id)
                         }
                     }
                     
+                    // Never silently delete bookings: refuse removing a slot that has appointments
+                    $this->refuseIfBooked(
+                        Appointment::whereIn('hour_id', Hour::where('day_id', $day->id)->whereNotIn('id', $hourIdsToKeep)->pluck('id')),
+                        'لا يمكن حذف ساعة بها مواعيد محجوزة (يوم ' . $day->day_date . ')'
+                    );
+
                     // ✅ DELETE hours that are NOT in the keep list
                     if (count($hourIdsToKeep) > 0) {
                         $deletedCount = Hour::where('day_id', $day->id)
@@ -1291,6 +1317,11 @@ public function updateFull(Request $request, $id)
                     // ============================================
                 }
                 
+                $this->refuseIfBooked(
+                    Appointment::whereIn('day_id', Day::where('event_specialty_id', $eventSpecialty->id)->whereNotIn('id', $processedDayIds)->pluck('id')),
+                    'لا يمكن حذف يوم به مواعيد محجوزة'
+                );
+
                 // Delete days not in the payload
                 $deletedDays = Day::where('event_specialty_id', $eventSpecialty->id)
                     ->whereNotIn('id', $processedDayIds)
@@ -1301,6 +1332,11 @@ public function updateFull(Request $request, $id)
                 }
             }
             
+            $this->refuseIfBooked(
+                Appointment::whereIn('event_specialty_id', EventSpecialty::where('event_id', $event->id)->whereNotIn('id', $processedEventSpecialtyIds)->pluck('id')),
+                'لا يمكن حذف تخصص به مواعيد محجوزة'
+            );
+
             // Delete event_specialties not in the payload
             $deletedEventSpecialties = EventSpecialty::where('event_id', $event->id)
                 ->whereNotIn('id', $processedEventSpecialtyIds)
@@ -1325,6 +1361,9 @@ public function updateFull(Request $request, $id)
             'event' => $event
         ], 200);
 
+    } catch (RuleException $e) {
+        DB::rollBack();
+        return $e->render();
     } catch (\Exception $e) {
         DB::rollBack();
         
@@ -1332,7 +1371,7 @@ public function updateFull(Request $request, $id)
             'event_id' => $id,
             'error' => $e->getMessage(),
             'trace' => $e->getTraceAsString(),
-            'request_data' => $request->all()
+            'request_keys' => array_keys($request->all())
         ]);
 
         return response()->json([
@@ -1352,6 +1391,7 @@ private function createEventSpecialty($eventId, $specData, $isSaturated)
         'specialty_id' => $specData['id'],
         'description' => $specData['description'] ?? '',
         'is_saturated' => $isSaturated,
+        'has_dilatation' => (bool) ($specData['has_dilatation'] ?? false),
         'max_number' => 100,
         'start_time' => '08:00:00',
         'addition_capacity' => 0,

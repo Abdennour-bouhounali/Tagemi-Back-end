@@ -50,7 +50,7 @@ class RoleController extends Controller implements HasMiddleware
         // Validate the request data
         $validatedData = $request->validate([
             'user_id' => 'required|exists:users,id',
-            'role' => 'required|integer'
+            'role' => 'required|integer|exists:roles,id'
         ]);
 
         // Find the user by the provided user_id
@@ -113,7 +113,7 @@ class RoleController extends Controller implements HasMiddleware
                 DB::rollback();
     
                 // Return an error response
-                return response()->json(['message' => 'Failed to assign specialities', 'error' => $e->getMessage()], 500);
+                return response()->json(['message' => 'Failed to assign specialities', 'error' => config('app.debug') ? $e->getMessage() : null], 500);
             }
         } else {
             // Return an unauthorized response

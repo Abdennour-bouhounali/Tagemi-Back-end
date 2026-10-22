@@ -9,9 +9,9 @@ use Illuminate\Support\Facades\Hash;
 class AuthController extends Controller
 {
     public function register(Request $request){
-     // Validate the request data
+     // Validate the request data. role_id is intentionally not accepted:
+     // self-registered accounts are always SimpleUser, roles are granted by a super admin.
      $validatedData = $request->validate([
-        'role_id' => 'integer|exists:roles,id',
         'name' => 'required|string|max:255',
         'email' => 'required|string|email|max:255|unique:users,email',
         'password' => 'required|string|min:8',
@@ -20,15 +20,15 @@ class AuthController extends Controller
 
     // Store the user data
     $user = User::create([
-        'role_id' => $request->input('role_id', 2), // Default to 1 if not provided
         'name' => $validatedData['name'],
         'email' => $validatedData['email'],
-        'password' => Hash::make($validatedData['password']), // Hash the password
-        'phone' => $validatedData['phone'],
+        'password' => $validatedData['password'], // hashed by the model cast
+        'phone' => $validatedData['phone'] ?? null,
     ]);
+    $user->forceFill(['role_id' => User::ROLE_SIMPLE_USER])->save();
 
      // Generate an API token
-     $token = $user->createToken($validatedData['name'])->plainTextToken;
+     $token = $user->createToken('auth')->plainTextToken;
 
      // Return a response
      return response()->json([
@@ -40,23 +40,25 @@ class AuthController extends Controller
 
     public function login(Request $request){
         $request->validate([
-            'email' => 'required|email|exists:users',
-            'password' => 'required'
+            'email' => 'required|email',
+            'password' => 'required|string'
         ]);
 
         $user = User::where('email',$request->email)->first();
 
+        // Same response whether the email exists or not, to avoid account enumeration
         if(!$user || !Hash::check($request->password, $user->password)){
-            return [
+            return response()->json([
+                'message' => 'Information Not Valide',
                 'errors' => [
                     'email'=>['Information Not Valide']
                 ]
-            ];
+            ], 422);
         }
 
 
         // Generate an API token
-     $token = $user->createToken($user->name)->plainTextToken;
+     $token = $user->createToken('auth')->plainTextToken;
 
      // Return a response
      return response()->json([
@@ -70,7 +72,8 @@ class AuthController extends Controller
 
     public function logout(Request $request){
 
-        $request->user()->tokens()->delete();
+        // Revoke only the token used for this request, so other devices stay logged in
+        $request->user()->currentAccessToken()->delete();
         return ['messgae'=>'You are logout'];
     }
 }

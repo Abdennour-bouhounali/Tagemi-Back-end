@@ -46,7 +46,8 @@ return [
     |
     */
 
-    'expiration' => null,
+    // Minutes; tokens of staff devices expire after 7 days by default
+    'expiration' => env('SANCTUM_EXPIRATION', 60 * 24 * 7),
 
     /*
     |--------------------------------------------------------------------------
