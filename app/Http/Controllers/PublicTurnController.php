@@ -46,7 +46,7 @@ class PublicTurnController extends Controller
         $patients = $appointments->groupBy('patient_id')
             ->take(self::MAX_PATIENTS_PER_PHONE)
             ->map(fn (Collection $rows) => [
-                'first_name' => explode(' ', trim($rows->first()->full_name))[0],
+                'first_name' => self::firstName($rows->first()->full_name),
                 'patient_id' => $rows->first()->patient_id,
                 'appointments' => $this->describe($rows),
             ])
@@ -105,6 +105,16 @@ class PublicTurnController extends Controller
                 ];
             })
             ->values();
+    }
+
+    /** First name only; compound names (عبد الله، أبو بكر) keep both words. */
+    private static function firstName(string $fullName): string
+    {
+        $words = preg_split('/\s+/u', trim($fullName));
+
+        return count($words) > 1 && in_array($words[0], ['عبد', 'أبو', 'ابو'], true)
+            ? $words[0].' '.$words[1]
+            : $words[0];
     }
 
     /** Last 9 digits: 0555 12 34 56, +213 555 12 34 56 and 213555123456 all match. */
