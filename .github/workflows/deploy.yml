@@ -36,6 +36,18 @@ jobs:
           echo "Installing PHP dependencies..."
           composer install --no-dev --optimize-autoloader
 
+          echo "Running database migrations..."
+          # Requires the one-time database/sql/2026_10_production_mark_legacy_migrations.sql.
+          # If a migration fails the site stays in maintenance mode instead of
+          # serving code that expects missing columns.
+          php artisan down --retry=60 || true
+          if php artisan migrate --force; then
+            php artisan up
+          else
+            echo "MIGRATION FAILED: site left in maintenance mode, fix and run 'php artisan migrate --force && php artisan up'"
+            exit 1
+          fi
+
           echo "Clearing & optimizing Laravel cache..."
           php artisan cache:clear
           php artisan config:clear
