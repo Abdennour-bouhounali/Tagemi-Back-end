@@ -5,9 +5,7 @@ namespace App\Http\Controllers;
 use Carbon\Carbon;
 use App\Models\Appointment;
 use Illuminate\Http\Request;
-use App\Exports\AppointmentsExport;
 use App\Models\Parameter;
-use Maatwebsite\Excel\Facades\Excel;
 use App\Models\User;
 
 class UsefulController extends Controller
@@ -77,13 +75,6 @@ class UsefulController extends Controller
             ],
             'residence_counts' => $residenceCounts
         ]);
-    }
-
-    public function exportAppointments(Request $request)
-    {
-
-        return Excel::download(new AppointmentsExport, 'GreenhouseData.csv');
-        
     }
 
     public function startVisitDay(Request $request){

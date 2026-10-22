@@ -319,7 +319,6 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // Visit-day switches and global exports
         Route::get('/getStatistics', [UsefulController::class, 'getStatistics']);
-        Route::get('/exportData', [UsefulController::class, 'exportAppointments']);
         Route::post('/startVisitDay', [UsefulController::class, 'startVisitDay']);
         Route::post('/DisplayHideAuth', [UsefulController::class, 'DisplayHideAuth']);
 

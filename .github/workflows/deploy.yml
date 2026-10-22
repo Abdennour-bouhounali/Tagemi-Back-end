@@ -27,6 +27,9 @@ jobs:
         OCTENIUM_SSH_PORT: ${{ secrets.OCTENIUM_SSH_PORT }}
       run: |
         ssh -o StrictHostKeyChecking=no -p ${OCTENIUM_SSH_PORT:-22} $OCTENIUM_USER@$OCTENIUM_HOST << 'EOF'
+          # Stop at the first failing step: a failed fetch/reset/composer must
+          # fail the workflow instead of "succeeding" with the old code.
+          set -e
           cd /var/www/Tagemi-Back-end
 
           echo "Fetching latest code..."
@@ -34,7 +37,7 @@ jobs:
           git reset --hard origin/main
 
           echo "Installing PHP dependencies..."
-          composer install --no-dev --optimize-autoloader
+          composer install --no-dev --optimize-autoloader --no-interaction
 
           echo "Running database migrations..."
           # Requires the one-time database/sql/2026_10_production_mark_legacy_migrations.sql.
@@ -56,7 +59,7 @@ jobs:
           php artisan optimize
 
           echo "Setting permissions..."
-          chmod -R 775 storage bootstrap/cache
+          chmod -R 775 storage bootstrap/cache || true  # files uploaded by the web server user can't be chmod-ed by deploy
 
           echo "Restarting services if required..."
           sudo systemctl restart php8.5-fpm || true
