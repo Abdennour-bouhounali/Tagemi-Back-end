@@ -2,11 +2,11 @@
 # Daily encrypted backup of the production database.
 #
 # Runs as root from cron: 30 2 * * * /var/www/Tagemi-Back-end/deploy/backup-db.sh
-#   1. dumps the database with mariadb-dump (consistent, no table locks)
+#   1. dumps the database with mysqldump/mariadb-dump (consistent, no table locks)
 #   2. encrypts it with the passphrase in /root/.backup-passphrase
 #   3. keeps 14 days on the server and 30 days on Google Drive (rclone remote "gdrive")
 #
-# Restore: gpg -d FILE.sql.gz.gpg | gunzip | mariadb DBNAME
+# Restore: gpg -d FILE.sql.gz.gpg | gunzip | mysql DBNAME
 set -euo pipefail
 
 DB_NAME="${DB_NAME:-u412486568_tagemi}"
@@ -18,7 +18,8 @@ mkdir -p "$LOCAL_DIR"
 chmod 700 "$LOCAL_DIR"
 FILE="$LOCAL_DIR/${DB_NAME}-$(date +%F-%H%M).sql.gz.gpg"
 
-mariadb-dump --single-transaction --quick --routines --triggers "$DB_NAME" \
+DUMP="$(command -v mysqldump || command -v mariadb-dump)"
+"$DUMP" --single-transaction --quick --routines --triggers "$DB_NAME" \
   | gzip -9 \
   | gpg --batch --yes --symmetric --cipher-algo AES256 --passphrase-file "$PASSPHRASE_FILE" -o "$FILE"
 
