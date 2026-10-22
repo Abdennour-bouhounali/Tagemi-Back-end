@@ -393,24 +393,34 @@ class VisitDayTest extends TestCase
 
     // ------------------------------------------------- public "my turn"
 
-    public function test_my_turn_needs_number_and_phone(): void
+    public function test_my_turn_by_patient_number_or_phone(): void
     {
-        [$a] = $this->esIds();
-        $ahead = $this->patient([[$a, 'today']]);
+        [$a, $b] = $this->esIds();
+        $ahead = $this->patient([[$a, 'today']], null, '0777000111');
         $this->checkIn($ahead['patient_id']);
         $p = $this->patient([[$a, 'today']], 'سارة بن علي', '0555 12 34 56');
         $this->checkIn($p['patient_id']);
+        // Same phone, another family member
+        $child = $this->patient([[$b, 'today']], 'يوسف بن علي', '0555123456');
         $this->app['auth']->forgetGuards();
-
         $url = '/api/public/my-turn';
-        $this->postJson($url, ['event_id' => $this->eventId, 'patient_id' => $p['patient_id'], 'phone' => '0555999999'])->assertNotFound();
-        $this->postJson($url, ['event_id' => $this->eventId, 'patient_id' => 424242, 'phone' => '0555123456'])->assertNotFound();
 
-        $this->postJson($url, ['event_id' => $this->eventId, 'patient_id' => $p['patient_id'], 'phone' => '+213 555 123 456'])
+        // Patient number alone
+        $this->postJson($url, ['event_id' => $this->eventId, 'patient_id' => $p['patient_id']])
             ->assertOk()
-            ->assertJsonPath('first_name', 'سارة')
-            ->assertJsonPath('appointments.0.people_before', 1)
-            ->assertJsonMissingPath('appointments.0.phone');
+            ->assertJsonCount(1, 'patients')
+            ->assertJsonPath('patients.0.first_name', 'سارة')
+            ->assertJsonPath('patients.0.appointments.0.people_before', 1)
+            ->assertJsonMissingPath('patients.0.appointments.0.phone');
+
+        // Phone alone, any format: both family members
+        $res = $this->postJson($url, ['event_id' => $this->eventId, 'phone' => '+213 555 123 456'])->assertOk();
+        $this->assertEqualsCanonicalizing([$p['patient_id'], $child['patient_id']], collect($res->json('patients'))->pluck('patient_id')->all());
+
+        // Neither, unknown number, unknown phone
+        $this->postJson($url, ['event_id' => $this->eventId])->assertStatus(422);
+        $this->postJson($url, ['event_id' => $this->eventId, 'patient_id' => 424242])->assertNotFound();
+        $this->postJson($url, ['event_id' => $this->eventId, 'phone' => '0699999999'])->assertNotFound();
     }
 
     // ------------------------------------------------- live refresh, stats
