@@ -17,9 +17,60 @@ class ActivityController extends Controller
         $this->mediaService = $mediaService;
     }
 
+    /** Content staff (super admin / content admin) get the full records, visitors a slim public view. */
+    private function isContentStaff(Request $request): bool
+    {
+        $user = $request->user('sanctum');
+
+        return $user && in_array($user->role_id, [1, 7], true);
+    }
+
+    /**
+     * Card payload for the public site: cover media only, plain-text excerpt instead of the
+     * full HTML body, and no staff (creator/updater) data.
+     */
+    private function toPublicCard(Activity $activity): array
+    {
+        $excerpt = fn (?string $html) => \Illuminate\Support\Str::limit(
+            trim(preg_replace('/\s+/u', ' ', html_entity_decode(strip_tags((string) $html), ENT_QUOTES | ENT_HTML5, 'UTF-8'))),
+            180
+        );
+        $cover = $activity->media->first();
+
+        return [
+            'id' => $activity->id,
+            'type_id' => $activity->type_id,
+            'title_en' => $activity->title_en,
+            'title_ar' => $activity->title_ar,
+            'excerpt_en' => $excerpt($activity->description_en),
+            'excerpt_ar' => $excerpt($activity->description_ar),
+            'location' => $activity->location,
+            'event_date' => $activity->event_date,
+            'event_end_date' => $activity->event_end_date,
+            'status' => $activity->status,
+            'participants_count' => $activity->participants_count,
+            'beneficiaries_count' => $activity->beneficiaries_count,
+            'featured' => $activity->featured,
+            'created_at' => $activity->created_at,
+            'media_count' => $activity->media->count(),
+            'cover' => $cover ? ['url' => $cover->url, 'type' => $cover->type] : null,
+        ];
+    }
+
+    private function listResponse(Request $request, $activities)
+    {
+        if ($this->isContentStaff($request)) {
+            return response()->json($activities)->header('Cache-Control', 'no-store');
+        }
+
+        return response()->json($activities->map(fn ($a) => $this->toPublicCard($a))->values())
+            ->header('Cache-Control', 'public, max-age=120, stale-while-revalidate=600');
+    }
+
     public function index(Request $request)
     {
-        $query = Activity::with(['media', 'type', 'creator', 'updater']);
+        $staff = $this->isContentStaff($request);
+        $query = Activity::with($staff ? ['media', 'type', 'creator', 'updater'] : ['media']);
 
         if ($request->has('status')) {
             $query->status($request->status);
@@ -33,36 +84,44 @@ class ActivityController extends Controller
             $query->byType($request->type_id);
         }
 
-        $sortBy = $request->get('sort_by', 'created_at');
-        $sortOrder = $request->get('sort_order', 'desc');
+        $sortBy = in_array($request->get('sort_by'), ['created_at', 'event_date', 'title_en', 'title_ar'], true)
+            ? $request->get('sort_by') : 'created_at';
+        $sortOrder = $request->get('sort_order') === 'asc' ? 'asc' : 'desc';
         $query->orderBy($sortBy, $sortOrder);
 
         if ($request->has('per_page')) {
-            $activities = $query->paginate($request->per_page);
-        } else {
-            $activities = $query->get();
+            $activities = $query->paginate(min((int) $request->per_page, 100));
+            if (! $staff) {
+                $activities->through(fn ($a) => $this->toPublicCard($a));
+            }
+
+            return response()->json($activities);
         }
 
-        return response()->json($activities);
+        return $this->listResponse($request, $query->get());
     }
 
-    public function showByType($typeId)
+    public function showByType(Request $request, $typeId)
     {
-        $activities = Activity::with(['media', 'type', 'creator', 'updater'])
+        $activities = Activity::with($this->isContentStaff($request) ? ['media', 'type', 'creator', 'updater'] : ['media'])
             ->byType($typeId)
             ->orderBy('created_at', 'desc')
             ->get();
 
-        return response()->json($activities);
+        return $this->listResponse($request, $activities);
     }
 
-    public function show($id)
+    public function show(Request $request, $id)
     {
-        $activity = Activity::with(['media', 'type', 'creator', 'updater'])->findOrFail($id);
-        
+        $staff = $this->isContentStaff($request);
+        $activity = Activity::with($staff ? ['media', 'type', 'creator', 'updater'] : ['media', 'type'])->findOrFail($id);
+
         $activity->media_stats = $this->mediaService->getMediaStats($activity);
-        
-        return response()->json($activity);
+
+        return response()->json($activity)->header(
+            'Cache-Control',
+            $staff ? 'no-store' : 'public, max-age=120, stale-while-revalidate=600'
+        );
     }
 
 public function store(Request $request)
