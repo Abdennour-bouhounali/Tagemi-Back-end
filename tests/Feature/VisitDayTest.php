@@ -42,7 +42,8 @@ class VisitDayTest extends TestCase
 
         foreach (['Eyes', 'Heart', 'Teeth', 'Skin'] as $name) {
             $specialtyId = DB::table('specialties')->insertGetId(['name' => $name . uniqid()]);
-            $esId = DB::table('event_specialties')->insertGetId(['event_id' => $this->eventId, 'specialty_id' => $specialtyId]);
+            // Open today (doctor present); tests about opening close them first
+            $esId = DB::table('event_specialties')->insertGetId(['event_id' => $this->eventId, 'specialty_id' => $specialtyId, 'opened_on' => QueueService::today()]);
             foreach (['today' => 0, 'tomorrow' => 1] as $key => $offset) {
                 $dayId = DB::table('days')->insertGetId([
                     'event_specialty_id' => $esId,
@@ -95,6 +96,16 @@ class VisitDayTest extends TestCase
     private function checkIn(int $patientId)
     {
         return $this->postJson("/api/events/{$this->eventId}/check-in", ['patient_id' => $patientId]);
+    }
+
+    private function close(int ...$esIds): void
+    {
+        DB::table('event_specialties')->whereIn('id', $esIds)->update(['opened_on' => null]);
+    }
+
+    private function toggle(int $esId)
+    {
+        return $this->patchJson("/api/event-specialties/{$esId}/toggle-open")->assertOk();
     }
 
     /** Patient ids of a specialty queue, in order. */
@@ -153,6 +164,133 @@ class VisitDayTest extends TestCase
         $ids = collect($this->getJson("/api/waitinglist/GetWaitingListBySpeciality/{$this->eventId}/{$specialtyId}")->assertOk()->json('appointments'))->pluck('patient_id')->all();
 
         $this->assertSame([$today['patient_id']], $ids);
+    }
+
+    // ------------------------------------------- open specialties, least busy
+
+    public function test_check_in_goes_to_least_busy_open_specialty(): void
+    {
+        [$a, $b] = $this->esIds();
+        // Equal queues: the primary specialty wins
+        $tie = $this->patient([[$a, 'today'], [$b, 'today']]);
+        $this->checkIn($tie['patient_id']);
+        $this->assertSame('Present', $this->statusOf($tie['ids'][0]));
+
+        // a now has 1, b has 0: the next patient goes to b although a is primary
+        $p = $this->patient([[$a, 'today'], [$b, 'today']]);
+        $this->checkIn($p['patient_id'])->assertOk()->assertJsonPath('position', 1);
+        $this->assertSame('Waiting', $this->statusOf($p['ids'][0]));
+        $this->assertSame('Present', $this->statusOf($p['ids'][1]));
+    }
+
+    public function test_check_in_skips_closed_specialties_and_waits_when_none_open(): void
+    {
+        [$a, $b, $c] = $this->esIds();
+        $this->close($a);
+        $p = $this->patient([[$a, 'today'], [$b, 'today']]);
+        $this->checkIn($p['patient_id'])->assertOk();
+        $this->assertSame([$p['patient_id']], $this->queue($b));
+        $this->assertSame([], $this->queue($a));
+
+        $this->close($c);
+        $q = $this->patient([[$c, 'today']]);
+        $res = $this->checkIn($q['patient_id'])->assertOk()->assertJsonPath('appointment', null);
+        $this->assertStringContainsString('لا يوجد تخصص مفتوح', $res->json('message'));
+        $this->assertSame('Waiting', $this->statusOf($q['ids'][0]));
+        $this->assertNotNull(Appointment::find($q['ids'][0])->checked_in_at);
+        // Checked in: a second check-in is refused
+        $this->checkIn($q['patient_id'])->assertStatus(409);
+    }
+
+    public function test_opening_sends_waiting_patients_in_arrival_order(): void
+    {
+        [$a] = $this->esIds();
+        $this->close($a);
+        $first = $this->patient([[$a, 'today']]);
+        $second = $this->patient([[$a, 'today']]);
+        $special = $this->patient([[$a, 'today']]);
+        $this->checkIn($first['patient_id']);
+        Appointment::whereKey($first['ids'][0])->update(['checked_in_at' => now()->subMinutes(10)]);
+        $this->checkIn($second['patient_id']);
+        $this->postJson("/api/waitinglist/Special/{$special['ids'][0]}")->assertOk();
+        $this->assertSame('Waiting', $this->statusOf($special['ids'][0]));
+        $this->assertSame([], $this->queue($a));
+
+        $this->toggle($a)->assertJsonPath('is_open', true)->assertJsonPath('sent', 3);
+
+        $this->assertSame([$special['patient_id'], $first['patient_id'], $second['patient_id']], $this->queue($a));
+    }
+
+    public function test_opening_rebalances_from_the_back_of_longer_queues(): void
+    {
+        [$a, $b] = $this->esIds();
+        $this->close($b);
+        $p = [];
+        foreach (range(1, 10) as $i) {
+            $p[$i] = $this->patient([[$a, 'today'], [$b, 'today']]);
+            $this->checkIn($p[$i]['patient_id']);
+        }
+        // A priority patient at the back is never moved
+        Appointment::whereKey($p[10]['ids'][0])->update(['is_priority' => true]);
+        $n = fn (...$is) => array_map(fn ($i) => $p[$i]['patient_id'], $is);
+
+        $this->toggle($b)->assertJsonPath('sent', 0)->assertJsonPath('moved', 4);
+
+        // First 5 protected; 9, 8, 7, 6 move while it brings them closer to the
+        // front, then keep their arrival order in the new queue
+        $this->assertSame($n(6, 7, 8, 9), $this->queue($b));
+        $this->assertSame($n(1, 2, 3, 4, 5, 10), $this->queue($a));
+        $this->assertSame('Waiting', $this->statusOf($p[9]['ids'][0]));
+    }
+
+    public function test_passed_goes_to_least_busy_open_specialty(): void
+    {
+        [$a, $b, $c] = $this->esIds();
+        $this->checkIn($this->patient([[$b, 'today']])['patient_id']);
+        $p = $this->patient([[$a, 'today'], [$b, 'today'], [$c, 'today'], [$this->esIds()[3], 'today']]);
+        $this->checkIn($p['patient_id']); // a
+        $this->close($this->esIds()[3]);
+
+        $this->postJson("/api/waitinglist/Complete/{$p['ids'][0]}")->assertOk();
+
+        // b has 1 waiting, c none, d closed: c
+        $this->assertSame('Present', $this->statusOf($p['ids'][2]));
+        $this->assertSame('Waiting', $this->statusOf($p['ids'][1]));
+        $this->assertSame('Waiting', $this->statusOf($p['ids'][3]));
+    }
+
+    public function test_closing_keeps_the_queue_but_stops_new_patients(): void
+    {
+        [$a, $b] = $this->esIds();
+        $before = $this->patient([[$a, 'today']]);
+        $this->checkIn($before['patient_id']);
+
+        $this->toggle($a)->assertJsonPath('is_open', false);
+        $after = $this->patient([[$a, 'today'], [$b, 'today']]);
+        $this->checkIn($after['patient_id']);
+
+        $this->assertSame([$before['patient_id']], $this->queue($a));
+        $this->assertSame([$after['patient_id']], $this->queue($b));
+        $this->postJson("/api/waitinglist/Complete/{$before['ids'][0]}")->assertOk();
+
+        // Hall screen data: the open state is public
+        $open = collect($this->getJson("/api/public/events/{$this->eventId}/specialties")->assertOk()->json('event_specialties'))
+            ->pluck('queue_open', 'id');
+        $this->assertFalse($open[$a]);
+        $this->assertTrue($open[$b]);
+    }
+
+    public function test_transfer_to_closed_specialty_waits(): void
+    {
+        [$a, $b] = $this->esIds();
+        $p = $this->patient([[$a, 'today']]);
+        $this->checkIn($p['patient_id']);
+        $this->close($b);
+
+        $this->postJson("/api/appointments/{$p['ids'][0]}/transfer-specialty", ['new_event_specialty_id' => $b, 'use_closest_slot' => true])->assertOk();
+
+        $this->assertSame('Waiting', $this->statusOf($p['ids'][0]));
+        $this->assertSame([], $this->queue($b));
     }
 
     // ------------------------------------------------- one queue at a time
@@ -432,6 +570,11 @@ class VisitDayTest extends TestCase
         $before = $this->getJson("/api/events/{$this->eventId}/live-version")->json('version');
         $this->checkIn($p['patient_id']);
 
+        $this->assertNotSame($before, $this->getJson("/api/events/{$this->eventId}/live-version")->json('version'));
+
+        // Opening or closing a specialty refreshes the screens too
+        $before = $this->getJson("/api/events/{$this->eventId}/live-version")->json('version');
+        $this->toggle($this->esIds()[3]);
         $this->assertNotSame($before, $this->getJson("/api/events/{$this->eventId}/live-version")->json('version'));
     }
 

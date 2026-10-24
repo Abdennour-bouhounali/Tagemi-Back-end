@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use App\Services\QueueService;
 use Illuminate\Database\Eloquent\Model;
 
 class EventSpecialty extends Model
@@ -20,18 +21,33 @@ class EventSpecialty extends Model
         'flag',
         'is_active',
         'has_dilatation',
+        'opened_on',
     ];
 
     protected $casts = [
         'is_saturated' => 'boolean',
         'is_active' => 'boolean',
         'has_dilatation' => 'boolean',
+        'opened_on' => 'date:Y-m-d',
     ];
+
+    // Visit day: open = the super admin opened its queue today (doctor present)
+    protected $appends = ['queue_open'];
 
     protected $attributes = [
         'is_saturated' => false,
         'is_active' => true,
     ];
+
+    public function isOpenToday(): bool
+    {
+        return $this->opened_on?->toDateString() === QueueService::today();
+    }
+
+    public function getQueueOpenAttribute(): bool
+    {
+        return $this->isOpenToday();
+    }
 
     public function event()
     {
@@ -57,5 +73,4 @@ class EventSpecialty extends Model
     {
         return $this->belongsToMany(Doctor::class, 'event_specialty_doctors');
     }
-
 }

@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Appointment;
 use App\Models\User;
+use App\Services\QueueService;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\RateLimiter;
@@ -37,7 +38,7 @@ class AuthorizationTest extends TestCase
     {
         $eventId = DB::table('events')->insertGetId(['name' => $name, 'date' => now()->toDateString(), 'is_active' => 1, 'is_archived' => 0]);
         $specialtyId = DB::table('specialties')->insertGetId(['name' => "Spec {$name}"]);
-        $esId = DB::table('event_specialties')->insertGetId(['event_id' => $eventId, 'specialty_id' => $specialtyId]);
+        $esId = DB::table('event_specialties')->insertGetId(['event_id' => $eventId, 'specialty_id' => $specialtyId, 'opened_on' => QueueService::today()]);
         $dayId = DB::table('days')->insertGetId(['event_specialty_id' => $esId, 'day_date' => now()->toDateString()]);
         $hourId = DB::table('hours')->insertGetId(['day_id' => $dayId, 'time' => '08:00:00']);
         $patientId = random_int(100000, 999999);
@@ -212,6 +213,18 @@ class AuthorizationTest extends TestCase
         $this->postJson("/api/waitinglist/Complete/{$this->eventB['appointmentId']}")->assertForbidden();
         $this->getJson("/api/waitinglist/GetWaitingListBySpeciality/{$this->eventB['eventId']}/1")->assertForbidden();
         $this->postJson('/api/appointment/addComment', ['appointment_id' => $this->eventB['appointmentId'], 'comment' => 'x'])->assertForbidden();
+    }
+
+    public function test_only_super_admin_opens_specialty_queues(): void
+    {
+        $esId = $this->eventA['esId'];
+        foreach ([User::ROLE_CHECK_ADMIN, User::ROLE_RECIPIENT_ADMIN, User::ROLE_DOCTOR, User::ROLE_SPECIAL_ADMIN] as $role) {
+            $this->actingAsRole($role, $this->eventA['eventId']);
+            $this->patchJson("/api/event-specialties/{$esId}/toggle-open")->assertForbidden();
+        }
+
+        $this->actingAsRole(User::ROLE_SUPER_ADMIN);
+        $this->patchJson("/api/event-specialties/{$esId}/toggle-open")->assertOk()->assertJsonPath('is_open', false);
     }
 
     public function test_staff_without_event_has_no_access(): void

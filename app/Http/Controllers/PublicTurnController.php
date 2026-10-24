@@ -100,6 +100,8 @@ class PublicTurnController extends Controller
                     // Dilatation: sent (go to the dilatation room) vs already there
                     'dilatation_step' => $group === 'dilatation' ? ($a->status === 'DilatationSent' ? 'sent' : 'in_room') : null,
                     'is_priority' => (bool) $a->is_priority,
+                    // false: waiting for this specialty's doctor to arrive
+                    'specialty_open' => (bool) $a->eventSpecialty?->isOpenToday(),
                     'position' => $position,
                     'people_before' => $position ? $position - 1 : null,
                 ];

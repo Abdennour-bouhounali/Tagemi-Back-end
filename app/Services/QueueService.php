@@ -20,6 +20,9 @@ use Illuminate\Support\Facades\DB;
  * - A specialty queue = today's Present + Commingsoon appointments, ordered by
  *   orderList (1, 2, 3 ...). Priority patients (special case, back from
  *   dilatation) form a block at the head, in the order they arrived.
+ * - A specialty only receives patients once the super admin opened it today
+ *   (its doctor is there). A patient goes to the least busy open specialty
+ *   they booked; with none open they wait until one opens.
  */
 class QueueService
 {
@@ -32,6 +35,8 @@ class QueueService
     public const ACTIVE_STATUSES = ['Present', 'Commingsoon', 'DilatationSent', 'Dilatation'];
     public const PUSH_DOWN_PLACES = 5;
     public const TRANSFER_POSITION = 3;
+    // When a specialty opens, the first places of other queues are never moved to it
+    public const PROTECTED_PLACES = 5;
 
     public static function today(): string
     {
@@ -86,12 +91,14 @@ class QueueService
     // ------------------------------------------------------------- check-in
 
     /**
-     * Reception check-in (QR scan or typed number). The first pending
-     * appointment of today joins its queue, the others wait.
+     * Reception check-in (QR scan or typed number). The patient joins the
+     * least busy open specialty they booked today, the others wait. With no
+     * open specialty, all wait and null is returned.
+     * $firstAppointmentId (special case) is used when its specialty is open.
      *
      * @throws RuleException
      */
-    public function checkIn(int $eventId, int $patientId, ?int $firstAppointmentId = null, bool $priority = false): Appointment
+    public function checkIn(int $eventId, int $patientId, ?int $firstAppointmentId = null, bool $priority = false): ?Appointment
     {
         return DB::transaction(function () use ($eventId, $patientId, $firstAppointmentId, $priority) {
             $todays = $this->todaysAppointments($eventId, $patientId);
@@ -104,15 +111,23 @@ class QueueService
                 throw new RuleException('المريض مسجل حضوره اليوم مسبقاً', 409);
             }
 
-            if ($firstAppointmentId) {
-                $todays = $todays->sortBy(fn ($a) => $a->id === $firstAppointmentId ? 0 : 1)->values();
-            }
+            Appointment::whereIn('id', $todays->pluck('id'))->update(['checked_in_at' => now()]);
 
             $special = $priority || $todays->contains('is_special', true);
-            $first = $todays->shift();
+            $open = $this->openSpecialtyIds($eventId);
+            $preferred = $firstAppointmentId ? $todays->firstWhere('id', $firstAppointmentId) : null;
+            $first = $preferred && in_array($preferred->event_specialty_id, $open)
+                ? $preferred
+                : $this->pickLeastBusy($todays, $open);
 
             foreach ($todays as $other) {
-                $this->setWaiting($other);
+                if ($other->id !== $first?->id) {
+                    $this->setWaiting($other);
+                }
+            }
+
+            if (!$first) {
+                return null;
             }
 
             $first->status = 'Present';
@@ -233,11 +248,18 @@ class QueueService
             }
 
             $todays = $this->todaysAppointments($appointment->event_id, $appointment->patient_id);
+            $notCheckedIn = $todays->every(fn ($a) => $a->status === 'Pending');
+            if (!$notCheckedIn && !$this->isOpen($appointment->event_specialty_id)) {
+                throw new RuleException('هذا التخصص غير مفتوح اليوم، اختر تخصصاً مفتوحاً', 409);
+            }
+
             Appointment::whereIn('id', $todays->pluck('id'))->update(['is_special' => true]);
             $appointment->refresh();
 
-            if ($todays->every(fn ($a) => $a->status === 'Pending')) {
-                return $this->checkIn($appointment->event_id, $appointment->patient_id, $appointment->id, true);
+            // Not checked in yet: checked in now with priority (waits if nothing is open)
+            if ($notCheckedIn) {
+                return $this->checkIn($appointment->event_id, $appointment->patient_id, $appointment->id, true)
+                    ?? $appointment->fresh();
             }
 
             if ($appointment->status === 'Completed') {
@@ -273,7 +295,7 @@ class QueueService
             if ((int) $target->event_id !== (int) $current->event_id) {
                 throw new RuleException('التخصص لا ينتمي لنفس الحدث', 422);
             }
-            if (!$target->is_active) {
+            if (!$target->isOpenToday()) {
                 throw new RuleException('هذا التخصص مغلق حالياً', 409);
             }
             if (Appointment::where('event_id', $current->event_id)->where('patient_id', $current->patient_id)
@@ -345,15 +367,143 @@ class QueueService
             foreach ($others->where('status', 'Pending') as $other) {
                 $this->setWaiting($other);
             }
+            Appointment::whereIn('id', $others->pluck('id')->push($appointment->id))
+                ->whereNull('checked_in_at')
+                ->update(['checked_in_at' => now()]);
+
+            // Closed specialty: it waits, the patient goes to an open one if any
+            if (!$this->isOpen($appointment->event_specialty_id)) {
+                $this->setWaiting($appointment);
+                $this->promoteNext($appointment->event_id, $appointment->patient_id);
+                return;
+            }
 
             $appointment->status = 'Present';
             $this->placeInQueue($appointment, self::TRANSFER_POSITION, false);
         });
     }
 
+    // ------------------------------------------------ opening (super admin)
+
+    /**
+     * The doctor arrived: the specialty opens for today. Patients who wait
+     * with no queue join it in arrival order, then patients from the back of
+     * longer queues move to it while that brings them closer to the front.
+     * The first PROTECTED_PLACES of a queue and priority patients stay.
+     *
+     * @return array{sent: int, moved: int}
+     */
+    public function openSpecialty(EventSpecialty $eventSpecialty): array
+    {
+        return DB::transaction(function () use ($eventSpecialty) {
+            $this->lockQueue($eventSpecialty->id);
+            $eventSpecialty->opened_on = self::today();
+            $eventSpecialty->save();
+
+            $waiting = self::scopeToday(Appointment::query())
+                ->where('event_specialty_id', $eventSpecialty->id)
+                ->where('status', 'Waiting')
+                ->orderBy('checked_in_at')
+                ->orderBy('id')
+                ->get();
+
+            $sent = 0;
+            $candidates = collect(); // [waiting appointment here, active appointment elsewhere]
+            foreach ($waiting as $appointment) {
+                $active = self::scopeToday(Appointment::query())
+                    ->where('event_id', $appointment->event_id)
+                    ->where('patient_id', $appointment->patient_id)
+                    ->whereIn('status', self::ACTIVE_STATUSES)
+                    ->first();
+
+                if (!$active) {
+                    $appointment->status = 'Present';
+                    $this->placeInQueue($appointment, null, (bool) $appointment->is_special);
+                    $sent++;
+                } elseif (in_array($active->status, self::QUEUE_STATUSES, true) && !$active->is_priority) {
+                    $candidates->push([$appointment, $active]);
+                }
+            }
+
+            $moved = collect();
+            while ($candidates->isNotEmpty()) {
+                // The patient furthest back (longest queue on ties) moves first
+                $ranked = $candidates
+                    ->map(fn ($pair, $key) => [
+                        'key' => $key,
+                        'place' => $this->positionOf($pair[1]) ?? 0,
+                        'length' => $this->queueLength($pair[1]->event_specialty_id),
+                    ])
+                    ->sortBy([['place', 'desc'], ['length', 'desc']])
+                    ->first();
+
+                $newPlace = $this->queueLength($eventSpecialty->id) + 1;
+                if ($ranked['place'] <= max(self::PROTECTED_PLACES, $newPlace)) {
+                    break;
+                }
+
+                [$appointment, $active] = $candidates->pull($ranked['key']);
+                $this->setWaiting($active);
+                $appointment->status = 'Present';
+                $this->placeInQueue($appointment, null, false);
+                $moved->push($appointment);
+            }
+
+            // Moved patients take the last places among themselves in arrival order
+            $places = $moved->pluck('orderList')->sort()->values();
+            foreach ($moved->sortBy([['checked_in_at', 'asc'], ['id', 'asc']])->values() as $i => $appointment) {
+                $appointment->orderList = $places[$i];
+                $appointment->save();
+            }
+
+            return ['sent' => $sent, 'moved' => $moved->count()];
+        });
+    }
+
+    /** The doctor left: no new patients are sent; the current queue is still served. */
+    public function closeSpecialty(EventSpecialty $eventSpecialty): void
+    {
+        $eventSpecialty->opened_on = null;
+        $eventSpecialty->save();
+    }
+
     // -------------------------------------------------------------- helpers
 
-    /** Next appointment on hold today becomes active and joins its queue. */
+    /** Ids of the event's specialties opened today. */
+    private function openSpecialtyIds(int $eventId): array
+    {
+        return EventSpecialty::where('event_id', $eventId)
+            ->whereDate('opened_on', self::today())
+            ->pluck('id')
+            ->all();
+    }
+
+    private function isOpen(int $eventSpecialtyId): bool
+    {
+        return EventSpecialty::whereKey($eventSpecialtyId)->whereDate('opened_on', self::today())->exists();
+    }
+
+    private function queueLength(int $eventSpecialtyId): int
+    {
+        return self::scopeToday(Appointment::query())
+            ->where('event_specialty_id', $eventSpecialtyId)
+            ->whereIn('status', self::QUEUE_STATUSES)
+            ->count();
+    }
+
+    /**
+     * The candidate whose open specialty has the shortest queue. Candidates
+     * come primary specialty first, which wins ties (stable sort).
+     */
+    private function pickLeastBusy(Collection $candidates, array $openIds): ?Appointment
+    {
+        return $candidates
+            ->filter(fn ($a) => in_array($a->event_specialty_id, $openIds))
+            ->sortBy(fn ($a) => $this->queueLength($a->event_specialty_id))
+            ->first();
+    }
+
+    /** Next appointment on hold today becomes active and joins the least busy open queue. */
     private function promoteNext(int $eventId, int $patientId): ?Appointment
     {
         $todays = $this->todaysAppointments($eventId, $patientId);
@@ -362,7 +512,7 @@ class QueueService
             return null;
         }
 
-        $next = $todays->firstWhere('status', 'Waiting');
+        $next = $this->pickLeastBusy($todays->where('status', 'Waiting'), $this->openSpecialtyIds($eventId));
         if (!$next) {
             return null;
         }

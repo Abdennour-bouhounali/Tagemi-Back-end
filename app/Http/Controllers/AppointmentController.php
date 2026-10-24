@@ -40,9 +40,9 @@ public function updatePresence(Request $request, $id)
     $request->validate(['status' => 'required|in:Present']);
 
     $appointment = Appointment::findOrFail($id);
-    $first = app(QueueService::class)->checkIn($appointment->event_id, $appointment->patient_id, $appointment->id);
+    $first = app(QueueService::class)->checkIn($appointment->event_id, $appointment->patient_id);
 
-    return $this->checkInResponse($first);
+    return $this->checkInResponse($first, $appointment->patient_id);
 }
 
 /**
@@ -53,11 +53,21 @@ public function checkInByNumber(Request $request, $eventId)
     $data = $request->validate(['patient_id' => 'required|integer|min:1']);
     $first = app(QueueService::class)->checkIn((int) $eventId, (int) $data['patient_id']);
 
-    return $this->checkInResponse($first);
+    return $this->checkInResponse($first, (int) $data['patient_id']);
 }
 
-private function checkInResponse(Appointment $first)
+private function checkInResponse(?Appointment $first, int $patientId)
 {
+    if (!$first) {
+        Log::info('Patient checked in, no specialty open', ['patient_id' => $patientId, 'by' => Auth::id()]);
+
+        return response()->json([
+            'message' => 'تم تسجيل حضور المريض #' . $patientId . '، لا يوجد تخصص مفتوح له حالياً، سيُوجَّه عند وصول الطبيب',
+            'appointment' => null,
+            'position' => null,
+        ], 200);
+    }
+
     $first->load(['eventSpecialty.specialty', 'day', 'hour']);
     Log::info('Patient checked in', ['patient_id' => $first->patient_id, 'appointment_id' => $first->id, 'by' => Auth::id()]);
 
@@ -77,8 +87,14 @@ public function liveVersion($eventId)
     $row = Appointment::where('event_id', $eventId)
         ->selectRaw('COUNT(*) as c, MAX(updated_at) as u, SUM(orderList) as o')
         ->first();
+    // Opening / closing a specialty changes the screens too
+    $opened = EventSpecialty::where('event_id', $eventId)
+        ->whereDate('opened_on', QueueService::today())
+        ->orderBy('id')
+        ->pluck('id')
+        ->implode(',');
 
-    return response()->json(['version' => md5("{$row->c}|{$row->u}|{$row->o}")]);
+    return response()->json(['version' => md5("{$row->c}|{$row->u}|{$row->o}|{$opened}")]);
 }
 
     /**

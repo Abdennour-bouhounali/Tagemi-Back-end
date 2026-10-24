@@ -51,7 +51,9 @@ class WaitingListController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'تم تحديد المريض كحالة خاصة (أولوية)',
+            'message' => $appointment->status === 'Present'
+                ? 'تم تحديد المريض كحالة خاصة (أولوية)'
+                : 'تم تحديد المريض كحالة خاصة، سيُوجَّه بأولوية عند فتح تخصصه',
             'appointment' => $appointment,
         ]);
     }
@@ -154,7 +156,7 @@ class WaitingListController extends Controller
 
         $options = EventSpecialty::with('specialty')
             ->where('event_id', $appointment->event_id)
-            ->where('is_active', true)
+            ->whereDate('opened_on', QueueService::today())
             ->whereNotIn('id', $booked)
             ->whereHas('days', fn ($q) => $q->whereDate('day_date', QueueService::today()))
             ->get()
@@ -185,17 +187,37 @@ class WaitingListController extends Controller
         ]);
     }
 
-    /** Open / close a specialty for referrals and transfers (does not affect existing patients). */
+    /**
+     * Super admin, visit day: open a specialty's queue for today when its
+     * doctor is there (waiting patients are sent to it), or close it (no new
+     * patients; the current queue is still served).
+     */
     public function toggleOpen($eventSpecialtyId)
     {
         $eventSpecialty = EventSpecialty::findOrFail($eventSpecialtyId);
-        $eventSpecialty->is_active = !$eventSpecialty->is_active;
-        $eventSpecialty->save();
 
-        return response()->json([
-            'message' => $eventSpecialty->is_active ? 'التخصص مفتوح لاستقبال المرضى المحالين' : 'التخصص مغلق أمام الإحالات',
-            'is_open' => $eventSpecialty->is_active,
-        ]);
+        if ($eventSpecialty->isOpenToday()) {
+            $this->queues->closeSpecialty($eventSpecialty);
+            Log::info('Specialty closed', ['event_specialty_id' => $eventSpecialty->id, 'by' => Auth::id()]);
+
+            return response()->json([
+                'message' => 'أُغلق التخصص، لن يُرسل إليه مرضى جدد',
+                'is_open' => false,
+            ]);
+        }
+
+        $result = $this->queues->openSpecialty($eventSpecialty);
+        Log::info('Specialty opened', ['event_specialty_id' => $eventSpecialty->id, 'by' => Auth::id()] + $result);
+
+        $message = 'فُتح التخصص';
+        if ($result['sent'] + $result['moved'] > 0) {
+            $message .= '، أُرسل إليه ' . ($result['sent'] + $result['moved']) . ' مريض';
+            if ($result['moved'] > 0) {
+                $message .= ' (' . $result['moved'] . ' من طوابير أخرى)';
+            }
+        }
+
+        return response()->json(['message' => $message, 'is_open' => true] + $result);
     }
 
     /**
@@ -223,9 +245,10 @@ class WaitingListController extends Controller
                     'event_specialty_id' => $es->id,
                     'specialty_id' => $es->specialty_id,
                     'name' => $es->specialty->name ?? '',
-                    'is_open' => (bool) $es->is_active,
+                    'is_open' => $es->isOpenToday(),
                     'has_dilatation' => (bool) $es->has_dilatation,
                     'in_queue' => $sum(QueueService::QUEUE_STATUSES),
+                    'waiting' => $sum(['Waiting']),
                     'completed' => $sum(['Completed']),
                     'dilatation_coming' => $sum(['DilatationSent']),
                     'dilatation_in_room' => $sum(['Dilatation']),
@@ -274,7 +297,7 @@ class WaitingListController extends Controller
             'appointments' => $appointments,
             'speciality' => $specialty->name,
             'event_specialty_id' => $eventSpecialty?->id,
-            'is_open' => (bool) $eventSpecialty?->is_active,
+            'is_open' => (bool) $eventSpecialty?->isOpenToday(),
             'has_dilatation' => (bool) $eventSpecialty?->has_dilatation,
             'summary' => $summary,
             'today' => QueueService::today(),

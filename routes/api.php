@@ -218,6 +218,9 @@ Route::middleware('auth:sanctum')->group(function () {
             ->middleware('event.access:appointment,id');
         Route::post('/appointments/{id}/refer', [WaitingListController::class, 'refer'])
             ->middleware('event.access:appointment,id');
+    });
+    // Visit day: open a specialty's queue when its doctor is there
+    Route::middleware('role:super_admin')->group(function () {
         Route::patch('/event-specialties/{id}/toggle-open', [WaitingListController::class, 'toggleOpen'])
             ->middleware('event.access:event_specialty,id');
     });
