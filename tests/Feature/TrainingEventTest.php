@@ -49,6 +49,13 @@ class TrainingEventTest extends TestCase
 
         $this->assertSame(8, DB::table('event_specialties')->where('event_id', $id)->count());
         $this->assertSame(100, DB::table('appointments')->where('event_id', $id)->count());
+
+        // Patients with 1, 2 and 3 specialties, never twice in the same one
+        $perPatient = DB::table('appointments')->where('event_id', $id)->groupBy('patient_id')
+            ->selectRaw('count(*) as n, count(distinct event_specialty_id) as d')->get();
+        $this->assertSame(65, $perPatient->count());
+        $this->assertTrue($perPatient->every(fn ($r) => $r->n === $r->d));
+        $this->assertSame([40, 15, 10], [$perPatient->where('n', 1)->count(), $perPatient->where('n', 2)->count(), $perPatient->where('n', 3)->count()]);
         $this->assertSame(100, DB::table('appointments')->where('event_id', $id)->where('status', 'Pending')->count());
         $this->assertSame(8, DB::table('days')->whereIn('event_specialty_id', DB::table('event_specialties')->where('event_id', $id)->pluck('id'))->where('day_date', QueueService::today())->count());
         $this->assertSame(100, (int) DB::table('hours')->join('days', 'days.id', '=', 'hours.day_id')->join('event_specialties', 'event_specialties.id', '=', 'days.event_specialty_id')->where('event_id', $id)->sum('counter'));

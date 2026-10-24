@@ -25,6 +25,8 @@ class TrainingEventService
     public const SPECIALTIES = 8;
     public const APPOINTMENTS = 100;
     public const PER_HOUR = 4;
+    // Specialties booked per patient, cycled: 8x1, 3x2, 2x3 = 20 appointments per 13 patients
+    public const BOOKING_SIZES = [1, 2, 1, 3, 1, 1, 2, 1, 3, 1, 2, 1, 1];
     public const HOURS = ['08:00:00', '09:00:00', '10:00:00', '11:00:00', '12:00:00', '13:00:00', '14:00:00', '15:00:00', '16:00:00', '17:00:00'];
 
     private const FIRST_NAMES_M = ['محمد', 'أحمد', 'يوسف', 'عمر', 'إبراهيم', 'خالد', 'مصطفى', 'عبد الله', 'ياسين', 'سليمان', 'رشيد', 'كمال', 'نبيل', 'سمير', 'حمزة'];
@@ -145,42 +147,53 @@ class TrainingEventService
 
         $nextPatientId = (int) Appointment::max('patient_id') + 1;
         $perSpecialty = array_fill(0, count($slots), 0);
+        $count = count($slots);
 
-        for ($i = 0; $i < self::APPOINTMENTS; $i++) {
-            $s = $i % count($slots);
-            [$eventSpecialty, $day, $hours] = $slots[$s];
-            $k = $perSpecialty[$s]++;
-            $hour = $hours[intdiv($k, self::PER_HOUR)];
+        // Patients book 1, 2 or 3 specialties (65 patients, 100 appointments)
+        $created = 0;
+        for ($p = 0; $created < self::APPOINTMENTS; $p++) {
+            $wanted = min(self::BOOKING_SIZES[$p % count(self::BOOKING_SIZES)], self::APPOINTMENTS - $created, $count);
 
-            $male = $i % 2 === 0;
+            $male = $p % 2 === 0;
             $firstNames = $male ? self::FIRST_NAMES_M : self::FIRST_NAMES_F;
-            [$state, $city] = self::STATES[$i % count(self::STATES)];
-            $name = $firstNames[$i % count($firstNames)] . ' ' . self::LAST_NAMES[intdiv($i, 2) % count(self::LAST_NAMES)] . ' ' . ($i + 1);
+            [$state, $city] = self::STATES[$p % count(self::STATES)];
+            $name = $firstNames[$p % count($firstNames)] . ' ' . self::LAST_NAMES[intdiv($p, 2) % count(self::LAST_NAMES)] . ' ' . ($p + 1);
+            $birthday = Carbon::parse(self::today())->subYears(18 + ($p * 7) % 60)->subDays($p * 11 % 300)->toDateString();
+            $phone = sprintf('0500%06d', $p + 1);
+            $patientId = $nextPatientId++;
 
-            Appointment::create([
-                'user_id' => 1,
-                'event_id' => $event->id,
-                'event_specialty_id' => $eventSpecialty->id,
-                'day_id' => $day->id,
-                'hour_id' => $hour->id,
-                'doctor_id' => null,
-                'full_name' => $name,
-                'birthday' => Carbon::parse(self::today())->subYears(18 + ($i * 7) % 60)->subDays($i * 11 % 300)->toDateString(),
-                'state' => $state,
-                'city' => $city,
-                'sex' => $male ? '0' : '1',
-                'phone' => sprintf('0500%06d', $i + 1),
-                'phone2' => sprintf('0500%06d', $i + 1),
-                'diseases' => 'تجريبي',
-                'comment' => 'مريض تجريبي',
-                'patient_id' => $nextPatientId++,
-                'specialty_order' => 1,
-                'position' => $k % self::PER_HOUR + 1,
-                'orderList' => 0,
-                'status' => 'Pending',
-            ]);
+            for ($j = 0; $j < $wanted; $j++) {
+                $s = ($p + $j * 3) % $count; // distinct specialties for one patient
+                [$eventSpecialty, $day, $hours] = $slots[$s];
+                $k = $perSpecialty[$s]++;
+                $hour = $hours[intdiv($k, self::PER_HOUR)];
 
-            $hour->counter++;
+                Appointment::create([
+                    'user_id' => 1,
+                    'event_id' => $event->id,
+                    'event_specialty_id' => $eventSpecialty->id,
+                    'day_id' => $day->id,
+                    'hour_id' => $hour->id,
+                    'doctor_id' => null,
+                    'full_name' => $name,
+                    'birthday' => $birthday,
+                    'state' => $state,
+                    'city' => $city,
+                    'sex' => $male ? '0' : '1',
+                    'phone' => $phone,
+                    'phone2' => $phone,
+                    'diseases' => 'تجريبي',
+                    'comment' => 'مريض تجريبي',
+                    'patient_id' => $patientId,
+                    'specialty_order' => $j === 0 ? 1 : 0,
+                    'position' => $k % self::PER_HOUR + 1,
+                    'orderList' => 0,
+                    'status' => 'Pending',
+                ]);
+
+                $hour->counter++;
+                $created++;
+            }
         }
 
         foreach ($slots as [, , $hours]) {
