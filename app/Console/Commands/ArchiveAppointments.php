@@ -99,7 +99,8 @@ class ArchiveAppointments extends Command
 
     private function autoArchiveEndedEvents()
     {
-        $endedEvents = Event::where('is_active', false)
+        $endedEvents = Event::where('is_simulation', false)
+                           ->where('is_active', false)
                            ->where('is_archived', false)
                            ->where('date', '<', now())
                            ->get();
@@ -118,7 +119,8 @@ class ArchiveAppointments extends Command
 
     private function interactiveArchive()
     {
-        $endedEvents = Event::where('date', '<', now())
+        $endedEvents = Event::where('is_simulation', false)
+                           ->where('date', '<', now())
                            ->where('is_archived', false)
                            ->get();
 

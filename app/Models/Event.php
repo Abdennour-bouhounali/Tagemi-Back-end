@@ -20,6 +20,7 @@ class Event extends Model
         'is_active',
         'is_archived',
         'is_tawat',
+        'is_simulation',
         'special_admin_id',
         'recipient_admin_id',
         'check_admin_id',
@@ -30,6 +31,7 @@ class Event extends Model
         'is_active' => 'boolean',
         'is_archived' => 'boolean',
         'is_tawat' => 'boolean',
+        'is_simulation' => 'boolean',
         'rules_ids' => 'array', // ADD THIS - cast to array
 
     ];

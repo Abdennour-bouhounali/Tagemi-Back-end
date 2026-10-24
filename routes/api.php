@@ -232,6 +232,9 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // Event management
         Route::post('/events', [EventController::class, 'store']);
+        Route::post('/events/training', [EventController::class, 'startTraining']);
+        Route::post('/events/{id}/training/reset', [EventController::class, 'resetTraining'])->whereNumber('id');
+        Route::delete('/events/{id}/training', [EventController::class, 'destroyTraining'])->whereNumber('id');
         Route::put('/events/{id}', [EventController::class, 'update']);
         Route::put('/events/{id}/full', [EventController::class, 'updateFull']);
         Route::delete('/events/{id}', [EventController::class, 'destroy']);

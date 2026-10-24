@@ -11,6 +11,7 @@ use App\Models\Event;
 use App\Models\EventSpecialty;
 use App\Models\Specialty;
 use App\Models\User;
+use App\Services\TrainingEventService;
 use App\Support\VisitStatistics;
 use App\Exceptions\RuleException;
 use App\Models\Day;
@@ -909,6 +910,7 @@ public function index()
         'nbr_of_allowed_specialties' => 'nullable|integer|min:1|max:5', // ADD THIS
         'is_active' => 'nullable|boolean',
         'is_tawat' => 'nullable|boolean',
+        'is_simulation' => 'nullable|boolean',
         'rules_ids' => 'nullable|array', // ADD THIS
         'rules_ids.*' => 'integer|exists:rules,id', // ADD THIS
         'specialties' => 'required|array|min:1',
@@ -948,6 +950,7 @@ public function index()
         'rules_ids' => $request->rules_ids ?? [],
         'is_active' => $request->is_active ?? true,
         'is_tawat' => $request->is_tawat ?? true,
+        'is_simulation' => $request->is_simulation ?? false,
         'is_archived' => false,
         'special_admin_id' => null,
         'recipient_admin_id' => null,
@@ -1060,6 +1063,7 @@ public function index()
         'rules_ids.*' => 'integer|exists:rules,id', // ADD THIS
         'is_active' => 'nullable|boolean',
         'is_tawat' => 'nullable|boolean',
+        'is_simulation' => 'nullable|boolean',
     ]);
         
         $event->update($validated);
@@ -1102,6 +1106,7 @@ public function updateFull(Request $request, $id)
         'description' => 'nullable|string',
         'is_active' => 'nullable|boolean',
         'is_tawat' => 'nullable|boolean',
+        'is_simulation' => 'nullable|boolean',
         'nbr_of_allowed_specialties' => 'nullable|integer|min:1|max:5',
         'rules_ids' => 'nullable|array',
         'rules_ids.*' => 'integer|exists:rules,id',
@@ -1144,6 +1149,7 @@ public function updateFull(Request $request, $id)
             'rules_ids' => $request->rules_ids ?? [],
             'is_active' => $request->is_active ?? $event->is_active,
             'is_tawat' => $request->is_tawat ?? $event->is_tawat,
+            'is_simulation' => $request->is_simulation ?? $event->is_simulation,
         ]);
 
         if ($request->has('specialties')) {
@@ -1623,6 +1629,50 @@ public function archive($id)
                 'error' => config('app.debug') ? $e->getMessage() : 'خطأ داخلي في الخادم'
             ], 500);
         }
+    }
+
+    /**
+     * Training event: start one for today, reset it to a fresh state, or delete it.
+     */
+    public function startTraining(TrainingEventService $training)
+    {
+        if ($existing = TrainingEventService::existing()) {
+            return response()->json([
+                'message' => 'يوجد حدث تدريبي بالفعل. أعد ضبطه أو احذفه أولاً.',
+                'event' => $existing,
+            ], 409);
+        }
+
+        $event = $training->start();
+
+        return response()->json([
+            'message' => 'تم إنشاء الحدث التدريبي لليوم',
+            'event' => $event,
+        ], 201);
+    }
+
+    public function resetTraining(TrainingEventService $training, $id)
+    {
+        $event = Event::where('is_simulation', true)->find($id);
+        if (!$event) {
+            return response()->json(['message' => 'ليس حدثًا تدريبيًا'], 404);
+        }
+
+        $training->reset($event);
+
+        return response()->json(['message' => 'تمت إعادة ضبط الحدث التدريبي', 'event' => $event->fresh()]);
+    }
+
+    public function destroyTraining(TrainingEventService $training, $id)
+    {
+        $event = Event::where('is_simulation', true)->find($id);
+        if (!$event) {
+            return response()->json(['message' => 'ليس حدثًا تدريبيًا'], 404);
+        }
+
+        $training->delete($event);
+
+        return response()->json(['message' => 'تم حذف الحدث التدريبي نهائيًا']);
     }
 
 /**
