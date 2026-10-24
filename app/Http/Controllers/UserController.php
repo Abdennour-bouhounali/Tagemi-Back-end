@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\User;
 use App\Models\Event;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
@@ -395,6 +396,59 @@ public function index()
                 'error' => config('app.debug') ? $e->getMessage() : 'خطأ داخلي'
             ], 500);
         }
+    }
+
+    /**
+     * Assign an event and/or a role to several users at once.
+     * A field left out of the request is kept as it is; "event_id": null unassigns.
+     * Super admins are always skipped.
+     */
+    public function bulkAssign(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'user_ids' => 'required|array|min:1|max:500',
+            'user_ids.*' => 'integer|exists:users,id',
+            'event_id' => 'nullable|exists:events,id',
+            'role_id' => 'sometimes|required|integer|exists:roles,id|not_in:' . User::ROLE_SUPER_ADMIN,
+        ], [
+            'user_ids.required' => 'اختر مستخدماً واحداً على الأقل',
+            'user_ids.*.exists' => 'أحد المستخدمين غير موجود',
+            'event_id.exists' => 'الحدث غير موجود',
+            'role_id.exists' => 'المهمة غير موجودة',
+            'role_id.not_in' => 'لا يمكن منح مهمة المدير العام من هنا',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'message' => $validator->errors()->first(),
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        $setEvent = $request->exists('event_id');
+        $setRole = $request->has('role_id');
+        if (!$setEvent && !$setRole) {
+            return response()->json(['message' => 'اختر حدثاً أو مهمة لتطبيقها'], 422);
+        }
+
+        $users = User::whereIn('id', $request->user_ids)
+            ->where('role_id', '!=', User::ROLE_SUPER_ADMIN)
+            ->get();
+
+        DB::transaction(function () use ($users, $request, $setEvent, $setRole) {
+            foreach ($users as $user) {
+                $changes = [];
+                if ($setEvent) $changes['event_id'] = $request->event_id;
+                if ($setRole) $changes['role_id'] = $request->role_id;
+                $user->forceFill($changes)->save();
+            }
+        });
+
+        return response()->json([
+            'message' => 'تم تحديث ' . $users->count() . ' مستخدم',
+            'updated' => $users->count(),
+            'skipped' => count(array_unique($request->user_ids)) - $users->count(),
+        ], 200);
     }
 
     /**

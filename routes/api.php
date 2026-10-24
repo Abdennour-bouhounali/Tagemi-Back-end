@@ -308,6 +308,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::prefix('users')->group(function () {
             Route::get('/', [UserController::class, 'index']);
             Route::get('/by-role', [UserController::class, 'getByRole']);
+            Route::post('/bulk-assign', [UserController::class, 'bulkAssign']);
             Route::get('/role/{roleId}', [UserController::class, 'getByRoleId']);
             Route::get('/event/{eventId}', [UserController::class, 'getByEvent']);
             Route::get('/{id}', [UserController::class, 'show']);
