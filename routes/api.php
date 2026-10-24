@@ -262,6 +262,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/events/{eventId}/report/approve', [EventReportController::class, 'approve']);
         Route::delete('/events/{eventId}/report', [EventReportController::class, 'destroy']);
 
+        // Deep statistics (matrices) for any event
+        Route::get('/events/{eventId}/deep-stats', [ArchivedEventStatisticsController::class, 'deepStats'])->whereNumber('eventId');
+
         // Archived event statistics
         Route::prefix('archived-events/{eventId}')->group(function () {
             Route::get('/specialty-stats', [ArchivedEventStatisticsController::class, 'specialtyStats']);

@@ -115,12 +115,13 @@ class WaitingListController extends Controller
     }
 
     /** Push down (إنزال) one patient. */
-    public function Commingsoon($id)
+    public function Commingsoon(Request $request, $id)
     {
+        $places = $this->pushDownPlaces($request);
         $appointment = Appointment::findOrFail($id);
-        $this->pushDownAppointments(collect([$appointment]));
+        $this->pushDownAppointments(collect([$appointment]), $places);
 
-        return response()->json(['message' => 'تم إنزال المريض ' . QueueService::PUSH_DOWN_PLACES . ' مراتب']);
+        return response()->json(['message' => 'تم إنزال المريض ' . $places . ' مراتب']);
     }
 
     /** Push down several patients of the same event at once. */
@@ -130,6 +131,7 @@ class WaitingListController extends Controller
             'appointment_ids' => 'required|array|min:1|max:100',
             'appointment_ids.*' => 'integer|distinct',
         ]);
+        $places = $this->pushDownPlaces($request);
 
         $appointments = Appointment::whereIn('id', $data['appointment_ids'])->get();
         $user = $request->user();
@@ -139,10 +141,10 @@ class WaitingListController extends Controller
             return response()->json(['message' => 'You are not authorized to access this event.'], 403);
         }
 
-        $this->pushDownAppointments($appointments);
+        $this->pushDownAppointments($appointments, $places);
 
         return response()->json([
-            'message' => 'تم إنزال ' . $appointments->count() . ' مريض ' . QueueService::PUSH_DOWN_PLACES . ' مراتب',
+            'message' => 'تم إنزال ' . $appointments->count() . ' مريض ' . $places . ' مراتب',
         ]);
     }
 
@@ -357,7 +359,15 @@ class WaitingListController extends Controller
         ]);
     }
 
-    private function pushDownAppointments($appointments): void
+    /** Optional "places" (1-50) chosen with the slider; defaults to PUSH_DOWN_PLACES. */
+    private function pushDownPlaces(Request $request): int
+    {
+        $data = $request->validate(['places' => 'sometimes|integer|min:1|max:50']);
+
+        return (int) ($data['places'] ?? QueueService::PUSH_DOWN_PLACES);
+    }
+
+    private function pushDownAppointments($appointments, int $places = QueueService::PUSH_DOWN_PLACES): void
     {
         foreach ($appointments as $appointment) {
             if (!in_array($appointment->status, QueueService::QUEUE_STATUSES, true)) {
@@ -365,7 +375,7 @@ class WaitingListController extends Controller
             }
         }
 
-        $this->queues->pushDown($appointments);
+        $this->queues->pushDown($appointments, $places);
         foreach ($appointments as $appointment) {
             $this->audit('pushed_down', $appointment);
         }

@@ -2,10 +2,12 @@
 
 namespace App\Http\Controllers;
 
+use App\Support\DeepStatistics;
 use App\Support\VisitStatistics;
 
 use Illuminate\Http\Request;
 use App\Models\Event;
+use App\Models\Appointment;
 use App\Models\AppointmentArchive;
 use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
@@ -167,6 +169,37 @@ public function statusStats($eventId)
             'event' => $event,
             'state_statistics' => $stateStats,
             'city_statistics' => $cityStats
+        ]);
+    }
+
+    /**
+     * Deep statistics: cross-tabulation matrices (ksar x sex, ...) for any
+     * event, archived or still running.
+     */
+    public function deepStats($eventId)
+    {
+        $event = Event::findOrFail($eventId);
+
+        $columns = [
+            'id', 'patient_id', 'city', 'sex', 'birthday', 'status',
+            'event_specialty_id', 'created_at',
+        ];
+        $live = Appointment::where('event_id', $eventId)->get($columns);
+        $archived = AppointmentArchive::where('event_id', $eventId)->get($columns);
+        $appointments = $live->concat($archived);
+
+        $specialtyNames = DB::table('event_specialties')
+            ->join('specialties', 'event_specialties.specialty_id', '=', 'specialties.id')
+            ->whereIn('event_specialties.id', $appointments->pluck('event_specialty_id')->unique())
+            ->pluck('specialties.name', 'event_specialties.id');
+        foreach ($appointments as $appointment) {
+            $appointment->specialty_name = $specialtyNames[$appointment->event_specialty_id] ?? null;
+        }
+
+        return response()->json([
+            'success' => true,
+            'event' => $event,
+            'statistics' => DeepStatistics::build($appointments),
         ]);
     }
 

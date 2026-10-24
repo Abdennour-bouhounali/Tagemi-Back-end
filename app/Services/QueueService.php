@@ -149,10 +149,10 @@ class QueueService
         });
     }
 
-    /** Pushes the given appointments of ONE queue back PUSH_DOWN_PLACES places. */
-    public function pushDown(Collection $appointments): void
+    /** Pushes the given appointments of ONE queue back $places places (default PUSH_DOWN_PLACES). */
+    public function pushDown(Collection $appointments, int $places = self::PUSH_DOWN_PLACES): void
     {
-        DB::transaction(function () use ($appointments) {
+        DB::transaction(function () use ($appointments, $places) {
             foreach ($appointments->groupBy('event_specialty_id') as $eventSpecialtyId => $group) {
                 $this->lockQueue($eventSpecialtyId);
                 $ids = $group->pluck('id')->all();
@@ -168,7 +168,7 @@ class QueueService
                 // Moving each selected patient back N places keeps the order
                 // of everyone else, also when several are pushed at once.
                 $ordered = $queue
-                    ->map(fn ($a, $i) => ['a' => $a, 'key' => in_array($a->id, $ids, true) ? max($i + self::PUSH_DOWN_PLACES, $lastPriority) + 0.5 : $i])
+                    ->map(fn ($a, $i) => ['a' => $a, 'key' => in_array($a->id, $ids, true) ? max($i + $places, $lastPriority) + 0.5 : $i])
                     ->sortBy('key')
                     ->pluck('a')
                     ->values();
