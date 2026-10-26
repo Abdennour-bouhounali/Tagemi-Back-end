@@ -36,7 +36,7 @@ use App\Http\Controllers\PublicTurnController;
 |   event.access:<type>,<arg>  staff may only touch their own event
 |                              (users.event_id); the super admin may touch all.
 | Roles: super_admin(1) simple_user(2) special_admin(3) check_admin(4)
-|        recipient_admin(5) doctor(6) content_admin(7)
+|        recipient_admin(5) doctor(6) content_admin(7) patient_manager(8)
 */
 
 // ============================================
@@ -119,7 +119,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // --------------------------------------------
     // Event staff (scoped to their own event)
     // --------------------------------------------
-    Route::middleware('role:super_admin,special_admin,check_admin,recipient_admin,doctor')->group(function () {
+    Route::middleware('role:super_admin,special_admin,check_admin,recipient_admin,doctor,patient_manager')->group(function () {
         // Event list is filtered to the user's own event in the controller
         Route::get('/events', [EventController::class, 'index']);
         Route::get('/getEvents', [EventController::class, 'index']);
@@ -190,21 +190,27 @@ Route::middleware('auth:sanctum')->group(function () {
             ->middleware('event.access:event,event_id');
     });
 
-    // Specialty queue (check admin) and doctors
-    Route::middleware('role:super_admin,check_admin,doctor')->group(function () {
+    // Specialty queue (check admin), patient manager and doctors
+    Route::middleware('role:super_admin,check_admin,doctor,patient_manager')->group(function () {
         Route::get('/events/{eventId}/stations', [WaitingListController::class, 'stations'])
             ->middleware('event.access:event,eventId');
         Route::get('waitinglist/GetWaitingListBySpeciality/{eventId}/{specialityId}', [WaitingListController::class, 'GetWaitingListBySpeciality'])
             ->middleware('event.access:event,eventId');
+    });
+    Route::middleware('role:super_admin,check_admin,doctor')->group(function () {
         Route::post('/appointment/addComment', [AppointmentController::class, 'addComment'])
             ->middleware('event.access:appointment,appointment_id');
+    });
+    // Push down (إنزال): the only queue action of the patient manager
+    Route::middleware('role:super_admin,check_admin,patient_manager')->group(function () {
+        Route::post('waitinglist/Commingsoon/{id}', [WaitingListController::class, 'Commingsoon'])
+            ->middleware('event.access:appointment,id');
+        Route::post('/waitinglist/push-down', [WaitingListController::class, 'pushDownMany']); // event checked per appointment
     });
     Route::middleware('role:super_admin,check_admin')->group(function () {
         Route::post('waitinglist/Complete/{id}', [WaitingListController::class, 'Completed'])
             ->middleware('event.access:appointment,id');
         Route::post('waitinglist/Dilatation/{id}', [WaitingListController::class, 'Dilatation'])
-            ->middleware('event.access:appointment,id');
-        Route::post('waitinglist/Commingsoon/{id}', [WaitingListController::class, 'Commingsoon'])
             ->middleware('event.access:appointment,id');
         Route::post('waitinglist/FinishedDilatation/{id}', [WaitingListController::class, 'FinishedDilatation'])
             ->middleware('event.access:appointment,id');
@@ -213,7 +219,6 @@ Route::middleware('auth:sanctum')->group(function () {
             ->middleware('event.access:appointment,id');
         Route::get('/event-specialties/{id}/dilatation-room', [WaitingListController::class, 'dilatationRoom'])
             ->middleware('event.access:event_specialty,id');
-        Route::post('/waitinglist/push-down', [WaitingListController::class, 'pushDownMany']); // event checked per appointment
         Route::get('/appointments/{id}/referral-options', [WaitingListController::class, 'referralOptions'])
             ->middleware('event.access:appointment,id');
         Route::post('/appointments/{id}/refer', [WaitingListController::class, 'refer'])

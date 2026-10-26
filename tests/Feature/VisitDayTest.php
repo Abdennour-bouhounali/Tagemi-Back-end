@@ -29,7 +29,7 @@ class VisitDayTest extends TestCase
     {
         parent::setUp();
 
-        foreach ([1 => 'SuperAdmin', 2 => 'SimpleUser', 3 => 'SpecialAdmin', 4 => 'CheckAdmin', 5 => 'RecipientAdmin', 6 => 'Doctor', 7 => 'ContentAdmin'] as $id => $name) {
+        foreach ([1 => 'SuperAdmin', 2 => 'SimpleUser', 3 => 'SpecialAdmin', 4 => 'CheckAdmin', 5 => 'RecipientAdmin', 6 => 'Doctor', 7 => 'ContentAdmin', 8 => 'PatientManager'] as $id => $name) {
             DB::table('roles')->updateOrInsert(['id' => $id], ['name' => $name]);
         }
 
@@ -379,6 +379,32 @@ class VisitDayTest extends TestCase
         // Several at once: each moves back 5 places, everyone else keeps their order
         $this->postJson('/api/waitinglist/push-down', ['appointment_ids' => [$p[2]['ids'][0], $p[3]['ids'][0]]])->assertOk();
         $this->assertSame($n(4, 5, 6, 1, 2, 7, 3, 8), $this->queue($a));
+    }
+
+    public function test_patient_manager_can_only_push_down(): void
+    {
+        [$a, $b] = $this->esIds();
+        $p = [];
+        foreach (range(1, 3) as $i) {
+            $p[$i] = $this->patient([[$a, 'today']]);
+            $this->checkIn($p[$i]['patient_id']);
+        }
+        $first = $p[1]['ids'][0];
+
+        Sanctum::actingAs($this->staff(User::ROLE_PATIENT_MANAGER));
+        $specialtyId = DB::table('event_specialties')->where('id', $a)->value('specialty_id');
+        $this->getJson("/api/events/{$this->eventId}/stations")->assertOk();
+        $this->getJson("/api/waitinglist/GetWaitingListBySpeciality/{$this->eventId}/{$specialtyId}")->assertOk();
+
+        $this->postJson("/api/waitinglist/Complete/{$first}")->assertForbidden();
+        $this->postJson("/api/waitinglist/Dilatation/{$first}")->assertForbidden();
+        $this->postJson("/api/appointments/{$first}/refer", ['event_specialty_id' => $b])->assertForbidden();
+        $this->postJson('/api/appointment/addComment', ['appointment_id' => $first, 'comment' => 'x'])->assertForbidden();
+        $this->assertSame('Present', $this->statusOf($first));
+
+        $this->postJson("/api/waitinglist/Commingsoon/{$first}", ['places' => 1])->assertOk();
+        $this->assertSame('Commingsoon', $this->statusOf($first));
+        $this->postJson('/api/waitinglist/push-down', ['appointment_ids' => [$p[2]['ids'][0]]])->assertOk();
     }
 
     public function test_push_down_never_lands_inside_priority_block(): void
