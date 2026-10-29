@@ -16,4 +16,9 @@ class Specialty extends Model
     {
         return $this->hasMany(EventSpecialty::class);
     }
+
+    public function doctors()
+    {
+        return $this->hasMany(Doctor::class);
+    }
 }

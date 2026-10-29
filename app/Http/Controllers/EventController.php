@@ -12,6 +12,7 @@ use App\Models\EventSpecialty;
 use App\Models\Specialty;
 use App\Models\User;
 use App\Services\TrainingEventService;
+use App\Services\DoctorScheduleService;
 use App\Support\VisitStatistics;
 use App\Exceptions\RuleException;
 use App\Models\Day;
@@ -26,6 +27,73 @@ use Illuminate\Support\Facades\Hash;
 use Carbon\Carbon;
 class EventController extends Controller
 {
+    // A specialty's doctors and their working intervals (see DoctorScheduleService)
+    private const SCHEDULE_RULES = [
+        'specialties.*.schedule' => 'nullable|array|min:1',
+        'specialties.*.schedule.*.doctor_id' => 'required|integer|exists:doctors,id',
+        'specialties.*.schedule.*.days' => 'required|array|min:1',
+        'specialties.*.schedule.*.days.*.day_date' => 'required|date',
+        'specialties.*.schedule.*.days.*.intervals' => 'required|array|min:1',
+        'specialties.*.schedule.*.days.*.intervals.*.id' => 'nullable|integer',
+        'specialties.*.schedule.*.days.*.intervals.*.start_time' => 'required|date_format:H:i,H:i:s',
+        'specialties.*.schedule.*.days.*.intervals.*.end_time' => 'required|date_format:H:i,H:i:s',
+        'specialties.*.schedule.*.days.*.intervals.*.visit_minutes' => 'required|integer|min:5|max:240',
+    ];
+
+    /**
+     * The event's specialties shaped like the edit form's state: a doctors'
+     * schedule when the specialty has intervals, else its legacy hourly days.
+     */
+    public function editData($id)
+    {
+        $event = Event::with([
+            'eventSpecialties.doctors:doctors.id',
+            'eventSpecialties.days' => fn ($q) => $q->orderBy('day_date'),
+            'eventSpecialties.days.hours' => fn ($q) => $q->orderBy('time'),
+            'eventSpecialties.days.intervals' => fn ($q) => $q->orderBy('start_time'),
+        ])->findOrFail($id);
+
+        $specialties = $event->eventSpecialties->map(function ($es) {
+            $base = [
+                'id' => $es->specialty_id,
+                'eventSpecialtyId' => $es->id,
+                'description' => $es->description ?? '',
+                'is_saturated' => (bool) $es->is_saturated,
+                'has_dilatation' => (bool) $es->has_dilatation,
+            ];
+            $date = fn ($day) => date('Y-m-d', strtotime($day->day_date));
+            $intervals = $es->days->flatMap(fn ($day) => $day->intervals->map(fn ($iv) => [$date($day), $iv]));
+
+            if ($intervals->isEmpty()) {
+                return $base + [
+                    'doctors' => $es->doctors->pluck('id')->all(),
+                    'days' => $es->days->map(fn ($day) => [
+                        'id' => $day->id,
+                        'day_date' => $date($day),
+                        'number_per_hour' => $day->number_per_hour ?? 6,
+                        'hours' => $day->hours->map(fn ($h) => ['id' => $h->id, 'time' => $h->time])->values(),
+                    ])->values(),
+                ];
+            }
+
+            $schedule = $intervals->groupBy(fn ($pair) => $pair[1]->doctor_id)->map(fn ($pairs, $doctorId) => [
+                'doctor_id' => (int) $doctorId,
+                'days' => $pairs->groupBy(fn ($pair) => $pair[0])->map(fn ($dayPairs, $dayDate) => [
+                    'day_date' => $dayDate,
+                    'intervals' => $dayPairs->map(fn ($pair) => [
+                        'id' => $pair[1]->id,
+                        'start_time' => substr($pair[1]->start_time, 0, 5),
+                        'end_time' => substr($pair[1]->end_time, 0, 5),
+                        'visit_minutes' => $pair[1]->visit_minutes,
+                    ])->values(),
+                ])->values(),
+            ])->values();
+
+            return $base + ['schedule' => $schedule];
+        })->values();
+
+        return response()->json(['specialties' => $specialties]);
+    }
 
 
 
@@ -899,9 +967,9 @@ public function index()
     /**
      * Store a new event with automatic admin creation
      */
-   public function store(Request $request)
+   public function store(Request $request, DoctorScheduleService $schedules)
 {
-            $validator = Validator::make($request->all(), [
+            $validator = Validator::make($request->all(), self::SCHEDULE_RULES + [
         'name' => 'required|string|max:255',
         'date' => 'required|date',
         'state' => 'nullable|string|max:255',
@@ -920,7 +988,8 @@ public function index()
         'specialties.*.doctors.*' => 'exists:doctors,id',
         'specialties.*.is_saturated' => 'nullable|boolean',
         'specialties.*.has_dilatation' => 'nullable|boolean',
-        'specialties.*.days' => 'required|array|min:1',
+        // Legacy hourly slots, when the specialty has no doctors' schedule
+        'specialties.*.days' => 'required_without:specialties.*.schedule|array|min:1',
         'specialties.*.days.*.day_date' => 'required|date',
         'specialties.*.days.*.number_per_hour' => 'required|integer|min:1|max:400',
         'specialties.*.days.*.hours' => 'required|array|min:1',
@@ -973,6 +1042,12 @@ public function index()
                     'flag' => 'Open',
                     'is_active' => true,
                 ]);
+
+            if (!empty($specData['schedule'])) {
+                $schedules->validate((int) $specData['id'], $specData['schedule']);
+                $schedules->sync($eventSpecialty, $specData['schedule']);
+                continue;
+            }
 
             if (!empty($specData['doctors'])) {
                 $eventSpecialty->doctors()->attach($specData['doctors']);
@@ -1030,9 +1105,12 @@ public function index()
             ]
         ], 201);
 
+    } catch (RuleException $e) {
+        DB::rollBack();
+        return $e->render();
     } catch (\Exception $e) {
         DB::rollBack();
-        
+
         Log::error('Event creation failed', [
             'error' => $e->getMessage(),
             'trace' => $e->getTraceAsString(),
@@ -1096,9 +1174,9 @@ private function refuseIfBooked($appointmentsQuery, string $message): void
  * - Creating new items (without IDs or null IDs)
  * - Deleting items not in the payload
  */
-public function updateFull(Request $request, $id)
+public function updateFull(Request $request, $id, DoctorScheduleService $schedules)
 {
-    $validator = Validator::make($request->all(), [
+    $validator = Validator::make($request->all(), self::SCHEDULE_RULES + [
         'name' => 'required|string|max:255',
         'date' => 'required|date',
         'state' => 'nullable|string|max:255',
@@ -1118,7 +1196,8 @@ public function updateFull(Request $request, $id)
         'specialties.*.doctors.*' => 'exists:doctors,id',
         'specialties.*.is_saturated' => 'nullable|boolean',
         'specialties.*.has_dilatation' => 'nullable|boolean',
-        'specialties.*.days' => 'required|array|min:1',
+        // Legacy hourly slots, when the specialty has no doctors' schedule
+        'specialties.*.days' => 'required_without:specialties.*.schedule|array|min:1',
         'specialties.*.days.*.id' => 'nullable|integer',
         'specialties.*.days.*.day_date' => 'required|date',
         'specialties.*.days.*.number_per_hour' => 'required|integer|min:1|max:400',
@@ -1185,7 +1264,14 @@ public function updateFull(Request $request, $id)
                 }
                 
                 $processedEventSpecialtyIds[] = $eventSpecialty->id;
-                
+
+                if (!empty($specData['schedule'])) {
+                    $keptDoctorIds = $eventSpecialty->doctors()->pluck('doctors.id')->map(fn ($v) => (int) $v)->all();
+                    $schedules->validate((int) $specData['id'], $specData['schedule'], $keptDoctorIds);
+                    $schedules->sync($eventSpecialty, $specData['schedule']);
+                    continue;
+                }
+
                 // Sync doctors
                 if (isset($specData['doctors'])) {
                     $eventSpecialty->doctors()->sync($specData['doctors']);

@@ -242,6 +242,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('/events/{id}/training', [EventController::class, 'destroyTraining'])->whereNumber('id');
         Route::put('/events/{id}', [EventController::class, 'update']);
         Route::put('/events/{id}/full', [EventController::class, 'updateFull']);
+        Route::get('/events/{id}/edit-data', [EventController::class, 'editData'])->whereNumber('id');
         Route::delete('/events/{id}', [EventController::class, 'destroy']);
         Route::patch('/events/{id}/set-active', [EventController::class, 'toggleActive']);
         Route::patch('/events/{id}/archive', [EventController::class, 'archive']);
@@ -305,9 +306,15 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::put('/specialty/{id}', [SpecialtyController::class, 'update']);
         Route::delete('/specialty/{id}', [SpecialtyController::class, 'destroy']);
 
-        // Doctors
+        // Doctors registry and their login accounts
         Route::get('/doctors', [DoctorController::class, 'index']);
-        Route::apiResource('doctor', DoctorController::class);
+        Route::post('/doctors', [DoctorController::class, 'store']);
+        Route::get('/doctors/busy-dates', [DoctorController::class, 'busyDates']);
+        Route::get('/doctors/{doctor}', [DoctorController::class, 'show'])->whereNumber('doctor');
+        Route::put('/doctors/{doctor}', [DoctorController::class, 'update'])->whereNumber('doctor');
+        Route::patch('/doctors/{doctor}/active', [DoctorController::class, 'toggleActive'])->whereNumber('doctor');
+        Route::post('/doctors/{doctor}/reset-password', [DoctorController::class, 'resetPassword'])->whereNumber('doctor');
+        Route::delete('/doctors/{doctor}', [DoctorController::class, 'destroy'])->whereNumber('doctor');
 
         // Booking rules
         Route::post('/rules', [RuleController::class, 'store']);

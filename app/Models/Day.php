@@ -37,4 +37,10 @@ class Day extends Model
     {
         return $this->hasMany(Appointment::class);
     }
+
+    /** Doctors' working intervals; empty for days created before intervals existed. */
+    public function intervals()
+    {
+        return $this->hasMany(DoctorInterval::class);
+    }
 }

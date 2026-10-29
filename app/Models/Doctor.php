@@ -9,14 +9,44 @@ class Doctor extends Model
 {
     use HasFactory;
 
+    public const SECTORS = ['public', 'private', 'both'];
+
     protected $fillable = [
-        'full_name',
-        'email',
+        'first_name',
+        'family_name',
         'phone',
+        'wilaya_code',
+        'specialty_id',
+        'sector',
         'is_active',
-        'created_at',
-        'updated_at',
     ];
+
+    protected $casts = [
+        'is_active' => 'boolean',
+    ];
+
+    protected $appends = ['full_name'];
+
+    public function getFullNameAttribute(): string
+    {
+        return trim($this->first_name . ' ' . $this->family_name);
+    }
+
+    public function specialty()
+    {
+        return $this->belongsTo(Specialty::class);
+    }
+
+    /** Login account (role doctor), created with the doctor. */
+    public function user()
+    {
+        return $this->belongsTo(User::class);
+    }
+
+    public function intervals()
+    {
+        return $this->hasMany(DoctorInterval::class);
+    }
 
     public function eventSpecialties()
     {

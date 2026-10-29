@@ -93,4 +93,10 @@ class User extends Authenticatable
     {
         return $this->hasMany(Appointment::class);
     }
+
+    /** Set when this is a doctor's login account. */
+    public function doctor()
+    {
+        return $this->hasOne(Doctor::class);
+    }
 }

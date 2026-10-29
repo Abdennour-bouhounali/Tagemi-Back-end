@@ -56,6 +56,9 @@ class AuthController extends Controller
             ], 422);
         }
 
+        if ($user->doctor && !$user->doctor->is_active) {
+            return response()->json(['message' => 'هذا الحساب موقوف، تواصل مع الإدارة'], 403);
+        }
 
         // Generate an API token
      $token = $user->createToken('auth')->plainTextToken;

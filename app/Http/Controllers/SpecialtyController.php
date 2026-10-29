@@ -123,6 +123,11 @@ public function store(Request $request)
             return response()->json(['message' => 'التخصص غير موجود'], 404);
         }
 
+        $doctors = $specialty->doctors()->count();
+        if ($doctors > 0) {
+            return response()->json(['message' => "لا يمكن حذف تخصص له أطباء مسجلون ({$doctors}). غيّر تخصصهم أو احذفهم أولاً."], 409);
+        }
+
         DB::beginTransaction();
         try {
             $specialty->delete();
