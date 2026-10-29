@@ -19,6 +19,10 @@
     </source>
     <php>
         <env name="APP_ENV" value="testing"/>
+        <!-- Test-only key: encryption must work even when the local .env has none -->
+        <env name="APP_KEY" value="base64:VM8PhuCo4fVSS2MAdSdSo1JmPNI6CRur73KC6sBFBLg="/>
+        <!-- Off for the suite (tests repeat requests on purpose); DuplicateRequestTest turns it on -->
+        <env name="DUPLICATE_REQUEST_WINDOW" value="0"/>
         <env name="APP_MAINTENANCE_DRIVER" value="file"/>
         <env name="BCRYPT_ROUNDS" value="4"/>
         <env name="CACHE_STORE" value="array"/>

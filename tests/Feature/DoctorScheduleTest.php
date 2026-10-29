@@ -191,6 +191,36 @@ class DoctorScheduleTest extends TestCase
         )));
     }
 
+    public function test_patients_can_book_the_computed_hours(): void
+    {
+        $eventId = $this->event($this->schedule())->assertCreated()->json('event.id');
+        $slot = DB::table('hours')->join('days', 'days.id', '=', 'hours.day_id')
+            ->join('event_specialties as es', 'es.id', '=', 'days.event_specialty_id')
+            ->where('es.event_id', $eventId)->where('hours.time', '08:00:00')
+            ->select('hours.id as hour_id', 'hours.day_id', 'es.id as es_id')->first();
+
+        $book = fn (string $name) => $this->postJson("/api/appointment/{$eventId}", [
+            'name' => $name, 'lastName' => 'بن علي', 'birthday' => '1990-05-05', 'state' => 'Adrar', 'city' => 'Adrar',
+            'phone' => '0555000111', 'phone2' => '0555000222', 'sex' => '0',
+            'specialties' => [['event_specialty_id' => $slot->es_id, 'day_id' => $slot->day_id, 'hour_id' => $slot->hour_id]],
+        ]);
+
+        // Hour 08 holds 2 visits (Dr A at 08:30 and 08:50); the day has no number_per_hour
+        $book('أحمد')->assertCreated();
+        $book('محمد')->assertCreated();
+        $book('سعيد')->assertStatus(409);
+
+        // Doctors share one room: no doctor is assigned at booking
+        $this->assertSame(0, DB::table('appointments')->where('event_id', $eventId)->whereNotNull('doctor_id')->count());
+    }
+
+    public function test_same_specialty_twice_is_a_validation_error(): void
+    {
+        $entry = ['id' => $this->specialtyId, 'schedule' => $this->schedule()];
+        $this->postJson('/api/events', ['name' => 'مكرر', 'date' => $this->date, 'specialties' => [$entry, $entry]])
+            ->assertStatus(422)->assertJsonValidationErrors('specialties.1.id');
+    }
+
     public function test_legacy_hourly_payload_still_works(): void
     {
         $this->postJson('/api/events', [

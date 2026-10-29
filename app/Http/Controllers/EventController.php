@@ -982,7 +982,7 @@ public function index()
         'rules_ids' => 'nullable|array', // ADD THIS
         'rules_ids.*' => 'integer|exists:rules,id', // ADD THIS
         'specialties' => 'required|array|min:1',
-        'specialties.*.id' => 'required|exists:specialties,id',
+        'specialties.*.id' => 'required|distinct|exists:specialties,id',
         'specialties.*.description' => 'nullable|string|max:500',
         'specialties.*.doctors' => 'nullable|array',
         'specialties.*.doctors.*' => 'exists:doctors,id',
@@ -1189,7 +1189,7 @@ public function updateFull(Request $request, $id, DoctorScheduleService $schedul
         'rules_ids' => 'nullable|array',
         'rules_ids.*' => 'integer|exists:rules,id',
         'specialties' => 'nullable|array',
-        'specialties.*.id' => 'required|exists:specialties,id',
+        'specialties.*.id' => 'required|distinct|exists:specialties,id',
         'specialties.*.eventSpecialtyId' => 'nullable|integer',
         'specialties.*.description' => 'nullable|string|max:500',
         'specialties.*.doctors' => 'nullable|array',

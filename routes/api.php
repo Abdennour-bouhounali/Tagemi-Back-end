@@ -6,6 +6,7 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\RoleController;
 use App\Http\Controllers\RuleController;
 use App\Http\Controllers\DoctorController;
+use App\Http\Controllers\DoctorAttendanceController;
 use App\Http\Controllers\UsefulController;
 use App\Http\Controllers\SpecialtyController;
 use App\Http\Controllers\AppointmentController;
@@ -228,6 +229,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::middleware('role:super_admin')->group(function () {
         Route::patch('/event-specialties/{id}/toggle-open', [WaitingListController::class, 'toggleOpen'])
             ->middleware('event.access:event_specialty,id');
+        // Doctors' arrival (first one opens the queue) and departure (last one closes it)
+        Route::get('/events/{id}/doctors-today', [DoctorAttendanceController::class, 'today'])->whereNumber('id');
+        Route::post('/event-specialties/{id}/doctors/{doctor}/arrive', [DoctorAttendanceController::class, 'arrive'])
+            ->whereNumber(['id', 'doctor']);
+        Route::post('/event-specialties/{id}/doctors/{doctor}/leave', [DoctorAttendanceController::class, 'leave'])
+            ->whereNumber(['id', 'doctor']);
+        Route::get('/doctors/{doctor}/history', [DoctorAttendanceController::class, 'history'])->whereNumber('doctor');
     });
 
     // --------------------------------------------

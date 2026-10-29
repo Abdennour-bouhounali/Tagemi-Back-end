@@ -377,9 +377,6 @@ public function getAvailableSlots(Request $request)
             return response()->json(['message' => 'الساعة المختارة غير صالحة لهذا اليوم.'], 422);
         }
 
-        $day = Day::find($validatedData['day_id']);
-        $maxSlotsPerHour = $day->number_per_hour;
-
         DB::beginTransaction();
         try {
             $hour = Hour::where('id', $validatedData['hour_id'])
@@ -414,8 +411,6 @@ public function getAvailableSlots(Request $request)
             $skippedAppointments = [];
             $patientIds = [];
             $duplicatePatients = [];
-
-            $doctor = $eventSpecialty->doctors()->first();
 
             $lastAppointment = Appointment::lockForUpdate()->orderBy('patient_id', 'desc')->first();
             $nextPatientId = $lastAppointment ? $lastAppointment->patient_id + 1 : 1;
@@ -470,7 +465,7 @@ public function getAvailableSlots(Request $request)
                     'event_specialty_id' => $validatedData['event_specialty_id'],
                     'day_id' => $validatedData['day_id'],
                     'hour_id' => $validatedData['hour_id'],
-                    'doctor_id' => $doctor ? $doctor->id : null,
+                    'doctor_id' => null, // doctors share one room: not known at booking
                     'full_name' => $fullName,
                     'birthday' => $appointmentData['birthday'],
                     'state' => $appointmentData['state'],
@@ -900,7 +895,9 @@ public function store(Request $request, $eventID)
                 continue;
             }
 
-            $maxSlotsPerHour = $day->number_per_hour;
+            // The hour's own capacity: days planned with doctors' intervals have
+            // no number_per_hour, each hour gets the visits computed for it
+            $maxSlotsPerHour = (int) $hour->max_allowed;
 
             // Lock and count existing appointments for this slot (backup check)
             $appointmentCount = Appointment::lockForUpdate()
@@ -922,8 +919,6 @@ public function store(Request $request, $eventID)
                 continue;
             }
 
-            // Get doctor for this event specialty
-            $doctor = $eventSpecialty->doctors()->first();
 
             // Create appointment WITH medical documents
             $appointment = Appointment::create([
@@ -932,7 +927,7 @@ public function store(Request $request, $eventID)
                 'event_specialty_id' => $specialtyData['event_specialty_id'],
                 'day_id' => $specialtyData['day_id'],
                 'hour_id' => $specialtyData['hour_id'],
-                'doctor_id' => $doctor ? $doctor->id : null,
+                'doctor_id' => null, // doctors share one room: not known at booking
                 'full_name' => $fullName,
                 'birthday' => $validatedData['birthday'],
                 'state' => $validatedData['state'],
@@ -1692,9 +1687,8 @@ public function transferSpecialty(Request $request, $id)
         $appointment->hour_id = $newHourId;
         $appointment->position = $newHour->counter;
         
-        // Get doctor for new specialty
-        $newDoctor = $newEventSpecialty->doctors()->first();
-        $appointment->doctor_id = $newDoctor ? $newDoctor->id : null;
+        // All doctors of a specialty share one room: no doctor is known before the visit
+        $appointment->doctor_id = null;
         
         $appointment->save();
 
@@ -1935,8 +1929,6 @@ public function storeMultipleDifferent(Request $request)
                 continue;
             }
 
-            // Get doctor for this specialty
-            $doctor = $eventSpecialty->doctors()->first();
 
             // Create appointment
             $appointment = Appointment::create([
@@ -1945,7 +1937,7 @@ public function storeMultipleDifferent(Request $request)
                 'event_specialty_id' => $appointmentData['event_specialty_id'],
                 'day_id' => $appointmentData['day_id'],
                 'hour_id' => $appointmentData['hour_id'],
-                'doctor_id' => $doctor ? $doctor->id : null,
+                'doctor_id' => null, // doctors share one room: not known at booking
                 'full_name' => $fullName,
                 'birthday' => $appointmentData['birthday'],
                 'state' => $appointmentData['state'],
@@ -2213,7 +2205,7 @@ public function createAllTestAppointments(Request $request)
                         'event_specialty_id' => $specialtyId,
                         'day_id' => $slot['day_id'],
                         'hour_id' => $slot['hour_id'],
-                        'doctor_id' => $doctor ? $doctor->id : null,
+                        'doctor_id' => null, // doctors share one room: not known at booking
                         'full_name' => $fullName,
                         'birthday' => $patientData['birthday'],
                         'state' => $patientData['state'],

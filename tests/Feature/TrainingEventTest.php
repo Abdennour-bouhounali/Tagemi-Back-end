@@ -26,6 +26,11 @@ class TrainingEventTest extends TestCase
         }
         DB::table('users')->updateOrInsert(['id' => 1], ['name' => 'admin', 'email' => 'admin1@test.local', 'password' => bcrypt('x'), 'role_id' => 1]);
 
+        // Only one training event may exist: start from none (rolled back after the test)
+        foreach (\App\Models\Event::where('is_simulation', true)->get() as $existing) {
+            app(\App\Services\TrainingEventService::class)->delete($existing);
+        }
+
         // Make sure there are at least 8 specialties to pick from
         while (DB::table('specialties')->count() < 8) {
             DB::table('specialties')->insert(['name' => 'T' . uniqid()]);

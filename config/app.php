@@ -67,6 +67,9 @@ return [
 
     'timezone' => env('APP_TIMEZONE', 'UTC'),
 
+    // Seconds during which an identical write request is answered once (0 = off)
+    'duplicate_request_window' => (int) env('DUPLICATE_REQUEST_WINDOW', 10),
+
     /*
     |--------------------------------------------------------------------------
     | Application Locale Configuration

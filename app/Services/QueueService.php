@@ -311,7 +311,7 @@ class QueueService
                 'event_specialty_id' => $target->id,
                 'day_id' => $day->id,
                 'hour_id' => $hour->id,
-                'doctor_id' => $target->doctors()->value('doctors.id'),
+                'doctor_id' => null, // doctors share one room: not known before the visit
                 'full_name' => $current->full_name,
                 'birthday' => $current->birthday,
                 'state' => $current->state,
