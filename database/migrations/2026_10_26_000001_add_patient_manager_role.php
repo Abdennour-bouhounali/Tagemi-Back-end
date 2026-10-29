@@ -4,7 +4,7 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Patient manager (مسؤول الإنزال): works the specialty queues like a check
+ * Patient manager (مسؤول القاعة الصغرى): works the specialty queues like a check
  * admin but may only push patients down, never mark them as passed.
  */
 return new class extends Migration
