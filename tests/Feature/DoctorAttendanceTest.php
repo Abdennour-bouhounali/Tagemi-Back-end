@@ -31,7 +31,7 @@ class DoctorAttendanceTest extends TestCase
     {
         parent::setUp();
 
-        foreach ([1 => 'SuperAdmin', 4 => 'CheckAdmin'] as $id => $name) {
+        foreach ([1 => 'SuperAdmin', 2 => 'SimpleUser', 4 => 'CheckAdmin'] as $id => $name) {
             DB::table('roles')->updateOrInsert(['id' => $id], ['name' => $name]);
         }
         $this->specialtyId = DB::table('specialties')->insertGetId(['name' => 'عيون' . uniqid()]);

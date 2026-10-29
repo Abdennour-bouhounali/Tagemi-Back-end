@@ -30,7 +30,12 @@ class DoctorScheduleTest extends TestCase
     {
         parent::setUp();
 
-        DB::table('roles')->updateOrInsert(['id' => 1], ['name' => 'SuperAdmin']);
+        // Every role: users default to role 2 (empty database in CI)
+        foreach ([1 => 'SuperAdmin', 2 => 'SimpleUser', 3 => 'SpecialAdmin', 4 => 'CheckAdmin', 5 => 'RecipientAdmin', 6 => 'Doctor', 7 => 'ContentAdmin', 8 => 'PatientManager'] as $id => $name) {
+            DB::table('roles')->updateOrInsert(['id' => $id], ['name' => $name]);
+        }
+        // Booking code stores user_id = 1 (the super admin in production)
+        DB::table('users')->updateOrInsert(['id' => 1], ['name' => 'admin', 'email' => 'admin1@test.local', 'password' => bcrypt('x'), 'role_id' => 1]);
         $this->specialtyId = DB::table('specialties')->insertGetId(['name' => 'عيون']);
         $this->otherSpecialtyId = DB::table('specialties')->insertGetId(['name' => 'أسنان']);
         $this->drA = $this->doctor('أ', $this->specialtyId);
