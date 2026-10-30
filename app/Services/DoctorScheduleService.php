@@ -15,10 +15,11 @@ use App\Models\Hour;
  * from them. Patients book an hour and all doctors of a specialty work in the
  * same room, so an hour's capacity is the number of visits, of all doctors,
  * that start within it. Example: 08:30-10:00 with 20-minute visits gives
- * 08:30, 08:50 (hour 08) and 09:10, 09:30 (hour 09).
+ * 08:30, 08:50 (hour 08) and 09:10, 09:30 (hour 09). An interval's extra
+ * visits (added by hand) are spread over its hours, first hours first.
  *
  * A schedule (API payload of one specialty) is:
- *   [{ doctor_id, days: [{ day_date, intervals: [{ id?, start_time, end_time, visit_minutes }] }] }]
+ *   [{ doctor_id, days: [{ day_date, intervals: [{ id?, start_time, end_time, visit_minutes, extra_visits? }] }] }]
  */
 class DoctorScheduleService
 {
@@ -40,7 +41,7 @@ class DoctorScheduleService
     }
 
     /**
-     * @param iterable $intervals items with start_time, end_time, visit_minutes
+     * @param iterable $intervals items with start_time, end_time, visit_minutes, extra_visits?
      * @return array<string,int> 'HH:00:00' => visits starting in that hour, sorted
      */
     public static function hourlyCapacity(iterable $intervals): array
@@ -50,9 +51,16 @@ class DoctorScheduleService
             $start = self::minutes($interval['start_time']);
             $visit = (int) $interval['visit_minutes'];
             $count = self::visits($start, self::minutes($interval['end_time']), $visit);
+            $hours = [];
             for ($k = 0; $k < $count; $k++) {
                 $hour = self::time(intdiv($start + $k * $visit, 60) * 60);
                 $capacity[$hour] = ($capacity[$hour] ?? 0) + 1;
+                $hours[$hour] = true;
+            }
+            $hours = array_keys($hours);
+            $extra = (int) ($interval['extra_visits'] ?? 0);
+            for ($k = 0; $k < $extra && $hours; $k++) {
+                $capacity[$hours[$k % count($hours)]]++;
             }
         }
         ksort($capacity);
@@ -137,7 +145,8 @@ class DoctorScheduleService
                         'start_time' => self::time($start),
                         'end_time' => self::time($end),
                         'visit_minutes' => (int) $iv['visit_minutes'],
-                        'visits_count' => self::visits($start, $end, (int) $iv['visit_minutes']),
+                        'extra_visits' => (int) ($iv['extra_visits'] ?? 0),
+                        'visits_count' => self::visits($start, $end, (int) $iv['visit_minutes']) + (int) ($iv['extra_visits'] ?? 0),
                     ];
                 }
             }

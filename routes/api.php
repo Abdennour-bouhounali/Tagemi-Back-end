@@ -12,6 +12,7 @@ use App\Http\Controllers\SpecialtyController;
 use App\Http\Controllers\AppointmentController;
 use App\Http\Controllers\WaitingListController;
 use App\Http\Controllers\EventController;
+use App\Http\Controllers\EventDraftController;
 use App\Http\Controllers\Content\BlogController;
 use App\Http\Controllers\Content\TypeController;
 use App\Http\Controllers\Content\MediaController;
@@ -245,6 +246,11 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // Event management
         Route::post('/events', [EventController::class, 'store']);
+        Route::get('/event-drafts', [EventDraftController::class, 'index']);
+        Route::post('/event-drafts', [EventDraftController::class, 'store']);
+        Route::get('/event-drafts/{draft}', [EventDraftController::class, 'show'])->whereNumber('draft');
+        Route::put('/event-drafts/{draft}', [EventDraftController::class, 'update'])->whereNumber('draft');
+        Route::delete('/event-drafts/{draft}', [EventDraftController::class, 'destroy'])->whereNumber('draft');
         Route::post('/events/training', [EventController::class, 'startTraining']);
         Route::post('/events/{id}/training/reset', [EventController::class, 'resetTraining'])->whereNumber('id');
         Route::delete('/events/{id}/training', [EventController::class, 'destroyTraining'])->whereNumber('id');

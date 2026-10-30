@@ -9,6 +9,7 @@ use App\Models\AppointmentArchive;  // ADD THIS
 use Illuminate\Support\Facades\Auth;
 use App\Models\Event;
 use App\Models\EventSpecialty;
+use App\Models\EventDraft;
 use App\Models\Specialty;
 use App\Models\User;
 use App\Services\TrainingEventService;
@@ -38,6 +39,7 @@ class EventController extends Controller
         'specialties.*.schedule.*.days.*.intervals.*.start_time' => 'required|date_format:H:i,H:i:s',
         'specialties.*.schedule.*.days.*.intervals.*.end_time' => 'required|date_format:H:i,H:i:s',
         'specialties.*.schedule.*.days.*.intervals.*.visit_minutes' => 'required|integer|min:5|max:240',
+        'specialties.*.schedule.*.days.*.intervals.*.extra_visits' => 'nullable|integer|min:0|max:500',
     ];
 
     /**
@@ -85,6 +87,7 @@ class EventController extends Controller
                         'start_time' => substr($pair[1]->start_time, 0, 5),
                         'end_time' => substr($pair[1]->end_time, 0, 5),
                         'visit_minutes' => $pair[1]->visit_minutes,
+                        'extra_visits' => $pair[1]->extra_visits,
                     ])->values(),
                 ])->values(),
             ])->values();
@@ -981,6 +984,7 @@ public function index()
         'is_simulation' => 'nullable|boolean',
         'rules_ids' => 'nullable|array', // ADD THIS
         'rules_ids.*' => 'integer|exists:rules,id', // ADD THIS
+        'draft_id' => 'nullable|integer',
         'specialties' => 'required|array|min:1',
         'specialties.*.id' => 'required|distinct|exists:specialties,id',
         'specialties.*.description' => 'nullable|string|max:500',
@@ -1082,6 +1086,11 @@ public function index()
                     Hour::insert($hoursToInsert);
                 }
             }
+        }
+
+        // The form's draft is done with (only the creator's own)
+        if ($request->filled('draft_id')) {
+            EventDraft::where('id', $request->draft_id)->where('user_id', $request->user()->id)->delete();
         }
 
         DB::commit();

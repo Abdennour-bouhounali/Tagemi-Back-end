@@ -131,6 +131,25 @@ class DoctorScheduleTest extends TestCase
         $this->assertSame('08:30', collect($data['schedule'])->firstWhere('doctor_id', $this->drA->id)['days'][0]['intervals'][0]['start_time']);
     }
 
+    public function test_extra_visits_are_spread_over_the_interval_hours(): void
+    {
+        // 08:30-10:00 / 20 min = 2 in 08h + 2 in 09h; 3 extra -> 08h, 09h, 08h
+        $capacity = DoctorScheduleService::hourlyCapacity([
+            ['start_time' => '08:30', 'end_time' => '10:00', 'visit_minutes' => 20, 'extra_visits' => 3],
+        ]);
+        $this->assertSame(['08:00:00' => 4, '09:00:00' => 3], $capacity);
+
+        $schedule = [['doctor_id' => $this->drA->id, 'days' => [['day_date' => $this->date, 'intervals' => [
+            $this->interval('08:30', '10:00', 20) + ['extra_visits' => 5],
+        ]]]]];
+        $eventId = $this->event($schedule)->assertCreated()->json('event.id');
+
+        $this->assertSame(['08:00:00' => 5, '09:00:00' => 4], $this->hours($eventId));
+        $this->assertSame(9, (int) DB::table('doctor_intervals')->where('doctor_id', $this->drA->id)->value('visits_count'));
+        $data = $this->getJson("/api/events/{$eventId}/edit-data")->assertOk()->json('specialties.0.schedule.0.days.0.intervals.0');
+        $this->assertSame(5, $data['extra_visits']);
+    }
+
     public function test_invalid_schedules_are_refused(): void
     {
         $overlap = [['doctor_id' => $this->drA->id, 'days' => [['day_date' => $this->date, 'intervals' => [
