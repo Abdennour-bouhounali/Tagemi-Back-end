@@ -520,7 +520,7 @@ class VisitDayTest extends TestCase
     {
         return $this->postJson("/api/appointment/{$this->eventId}", [
             'name' => $name, 'lastName' => 'بن علي', 'birthday' => '1990-05-05', 'state' => 'Adrar', 'city' => 'Adrar',
-            'phone' => '0555000111', 'phone2' => '0555000222', 'sex' => '0',
+            'phone' => '0555000111', 'phone2' => '0555000222', 'sex' => '0', 'data_consent' => '1',
             'specialties' => array_map(fn ($es) => ['event_specialty_id' => $es, 'day_id' => $this->es[$es]['today'][0], 'hour_id' => $this->es[$es]['today'][1]], $esIds),
         ]);
     }

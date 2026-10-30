@@ -40,5 +40,10 @@ class AppServiceProvider extends ServiceProvider
         RateLimiter::for('public-forms', function (Request $request) {
             return Limit::perMinute(20)->by($request->ip());
         });
+
+        // Health data behind three answers: keep guessing slow
+        RateLimiter::for('my-data', function (Request $request) {
+            return [Limit::perMinute(5)->by($request->ip()), Limit::perDay(30)->by($request->ip())];
+        });
     }
 }

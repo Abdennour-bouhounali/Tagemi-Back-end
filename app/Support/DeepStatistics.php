@@ -89,6 +89,7 @@ class DeepStatistics
                 default => 'لم يحضر',
             },
             'specialty' => $a->specialty_name ?: self::UNKNOWN,
+            'status' => VisitStatistics::groupOf($a->status),
             'attended' => $a->status !== 'Pending' && VisitStatistics::outcomeOf($a->status) !== 'Pending',
             'completed' => $a->status === 'Completed',
             'day' => $a->created_at ? Carbon::parse($a->created_at)->format('Y-m-d') : null,
@@ -97,13 +98,6 @@ class DeepStatistics
         $patients = $rows->unique('patient')->values();
 
         $ksarOrder = $patients->countBy('ksar')->sortDesc()->keys()->all();
-        $specialtyOrder = $rows->countBy('specialty')->sortDesc()->keys()->all();
-        $sexOrder = ['ذكر', 'أنثى'];
-        $outcomeOrder = ['أنهى الفحص', 'حضر ولم يُفحص', 'لم يحضر'];
-        $ageOrder = self::AGE_GROUPS;
-        if ($patients->contains('age_group', self::UNKNOWN)) {
-            $ageOrder[] = self::UNKNOWN;
-        }
 
         return [
             'totals' => [
@@ -116,15 +110,36 @@ class DeepStatistics
             'pyramid' => self::pyramid($patients),
             'timeline' => self::timeline($rows),
             'insights' => self::insights($patients, $rows, $ksarOrder),
-            'matrices' => [
-                'ksar_sex' => self::matrix('القصر × الجنس', 'patients', $patients, 'ksar', 'sex', $ksarOrder, $sexOrder),
-                'ksar_age' => self::matrix('القصر × الفئة العمرية', 'patients', $patients, 'ksar', 'age_group', $ksarOrder, $ageOrder),
-                'sex_age' => self::matrix('الجنس × الفئة العمرية', 'patients', $patients, 'sex', 'age_group', $sexOrder, $ageOrder),
-                'ksar_outcome' => self::matrix('القصر × الحالة', 'appointments', $rows, 'ksar', 'outcome', $ksarOrder, $outcomeOrder),
-                'sex_outcome' => self::matrix('الجنس × الحالة', 'appointments', $rows, 'sex', 'outcome', $sexOrder, $outcomeOrder),
-                'ksar_specialty' => self::matrix('القصر × التخصص', 'appointments', $rows, 'ksar', 'specialty', $ksarOrder, $specialtyOrder),
-                'sex_specialty' => self::matrix('الجنس × التخصص', 'appointments', $rows, 'sex', 'specialty', $sexOrder, $specialtyOrder),
-            ],
+            'matrices' => self::matrices($rows),
+            // Same matrices restricted to one appointment status group; a patient
+            // counts in a group when one of their appointments is in it.
+            'matrices_by_status' => collect(array_keys(VisitStatistics::GROUPS))
+                ->mapWithKeys(fn ($group) => [$group => self::matrices($rows->where('status', $group)->values())])
+                ->all(),
+        ];
+    }
+
+    private static function matrices(Collection $rows): array
+    {
+        $patients = $rows->unique('patient')->values();
+
+        $ksarOrder = $patients->countBy('ksar')->sortDesc()->keys()->all();
+        $specialtyOrder = $rows->countBy('specialty')->sortDesc()->keys()->all();
+        $sexOrder = ['ذكر', 'أنثى'];
+        $outcomeOrder = ['أنهى الفحص', 'حضر ولم يُفحص', 'لم يحضر'];
+        $ageOrder = self::AGE_GROUPS;
+        if ($patients->contains('age_group', self::UNKNOWN)) {
+            $ageOrder[] = self::UNKNOWN;
+        }
+
+        return [
+            'ksar_sex' => self::matrix('القصر × الجنس', 'patients', $patients, 'ksar', 'sex', $ksarOrder, $sexOrder),
+            'ksar_age' => self::matrix('القصر × الفئة العمرية', 'patients', $patients, 'ksar', 'age_group', $ksarOrder, $ageOrder),
+            'sex_age' => self::matrix('الجنس × الفئة العمرية', 'patients', $patients, 'sex', 'age_group', $sexOrder, $ageOrder),
+            'ksar_outcome' => self::matrix('القصر × الحالة', 'appointments', $rows, 'ksar', 'outcome', $ksarOrder, $outcomeOrder),
+            'sex_outcome' => self::matrix('الجنس × الحالة', 'appointments', $rows, 'sex', 'outcome', $sexOrder, $outcomeOrder),
+            'ksar_specialty' => self::matrix('القصر × التخصص', 'appointments', $rows, 'ksar', 'specialty', $ksarOrder, $specialtyOrder),
+            'sex_specialty' => self::matrix('الجنس × التخصص', 'appointments', $rows, 'sex', 'specialty', $sexOrder, $specialtyOrder),
         ];
     }
 

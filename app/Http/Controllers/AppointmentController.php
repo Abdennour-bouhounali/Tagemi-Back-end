@@ -323,7 +323,7 @@ public function getAvailableSlots(Request $request)
                 'appointments.*.city' => 'required|string|max:100',
                 'appointments.*.diseases' => 'nullable|string|max:500',
                 'appointments.*.phone' => 'required|string|max:20',
-                'appointments.*.phone2' => 'required|string|max:20',
+                'appointments.*.phone2' => 'nullable|string|max:20',
                 'appointments.*.sex' => 'required|in:0,1',
                 // NEW: Validate medical documents for each appointment
                 'appointments.*.medical_documents' => 'nullable|array|max:5',
@@ -472,7 +472,7 @@ public function getAvailableSlots(Request $request)
                     'city' => $appointmentData['city'],
                     'diseases' => $appointmentData['diseases'] ?? 'nothing',
                     'phone' => $appointmentData['phone'],
-                    'phone2' => $appointmentData['phone2'],
+                    'phone2' => $appointmentData['phone2'] ?? '',
                     'sex' => $appointmentData['sex'],
                     'patient_id' => $nextPatientId,
                     'specialty_order' => 1,
@@ -772,8 +772,9 @@ public function store(Request $request, $eventID)
             'city' => 'required|string|max:100',
             'diseases' => 'nullable|string|max:500',
             'phone' => 'required|string|max:20',
-            'phone2' => 'required|string|max:20',
+            'phone2' => 'nullable|string|max:20',
             'sex' => 'required|in:0,1',
+            'data_consent' => 'accepted',
             'specialties' => 'required|array|min:1|max:' . max(1, (int) ($event->nbr_of_allowed_specialties ?? 1)),
             'specialties.*.event_specialty_id' => 'required|exists:event_specialties,id',
             'specialties.*.day_id' => 'required|exists:days,id',
@@ -781,6 +782,8 @@ public function store(Request $request, $eventID)
             // Validate medical documents
             'medical_documents' => 'nullable|array|max:5',
             'medical_documents.*' => 'nullable|file|mimes:pdf,jpg,jpeg,png,doc,docx|max:10240', // 10MB max per file
+        ], [
+            'data_consent.accepted' => 'يجب الموافقة على معالجة بياناتك الشخصية لإتمام الحجز.',
         ]);
         
         Log::info('Validation passed');
@@ -934,8 +937,9 @@ public function store(Request $request, $eventID)
                 'city' => $validatedData['city'],
                 'diseases' => $validatedData['diseases'] ?? 'nothing',
                 'phone' => $validatedData['phone'],
-                'phone2' => $validatedData['phone2'],
+                'phone2' => $validatedData['phone2'] ?? '',
                 'sex' => $validatedData['sex'],
+                'data_consent_at' => now(),
                 'patient_id' => $nextPatientId,
                 'specialty_order' => $index === 0 ? 1 : 0,
                 'status' => 'Pending',
@@ -1234,7 +1238,7 @@ private function handleMedicalDocuments(Request $request, $patientId)
             'city' => 'sometimes|required|string|max:100',
             'diseases' => 'nullable|string|max:500',
             'phone' => 'sometimes|required|string|max:20',
-            'phone2' => 'sometimes|required|string|max:20',
+            'phone2' => 'nullable|string|max:20',
             'sex' => 'sometimes|required|in:0,1',
         ]);
 
@@ -1264,8 +1268,8 @@ private function handleMedicalDocuments(Request $request, $patientId)
         if (isset($validated['phone'])) {
             $appointment->phone = $validated['phone'];
         }
-        if (isset($validated['phone2'])) {
-            $appointment->phone2 = $validated['phone2'];
+        if (array_key_exists('phone2', $validated)) {
+            $appointment->phone2 = $validated['phone2'] ?? '';
         }
         if (isset($validated['sex'])) {
             $appointment->sex = $validated['sex'];

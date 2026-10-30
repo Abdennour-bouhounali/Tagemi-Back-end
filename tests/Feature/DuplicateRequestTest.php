@@ -45,7 +45,7 @@ class DuplicateRequestTest extends TestCase
     {
         return [
             'name' => $name, 'lastName' => 'بن علي', 'birthday' => '1990-05-05', 'state' => 'Adrar', 'city' => 'Adrar',
-            'phone' => '0555000111', 'phone2' => '0555000222', 'sex' => '0', 'specialties' => [$this->slot],
+            'phone' => '0555000111', 'phone2' => '0555000222', 'sex' => '0', 'data_consent' => '1', 'specialties' => [$this->slot],
         ];
     }
 

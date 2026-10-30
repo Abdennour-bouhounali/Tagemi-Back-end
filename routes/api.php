@@ -28,6 +28,7 @@ use App\Http\Controllers\EvaluationController;
 use App\Http\Controllers\ArchivedEventStatisticsController;
 use App\Http\Controllers\DocumentController;
 use App\Http\Controllers\PublicTurnController;
+use App\Http\Controllers\PatientDataController;
 
 /*
 |--------------------------------------------------------------------------
@@ -59,6 +60,8 @@ Route::get('/public/events/{id}/specialties', [EventController::class, 'getSpeci
 Route::get('/public/waitinglist', [WaitingListController::class, 'getPublicWaitingList']);
 // "See my turn" page (public QR poster): patient number + phone number
 Route::post('/public/my-turn', [PublicTurnController::class, 'show'])->middleware('throttle:public-forms');
+// Right of access: a patient reads all the data kept about them
+Route::post('/public/my-data', [PatientDataController::class, 'show'])->middleware('throttle:my-data');
 
 // Booking rules and specialties shown on the public form
 Route::get('/rules', [RuleController::class, 'index']);

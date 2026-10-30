@@ -120,7 +120,7 @@ class PublicTurnController extends Controller
     }
 
     /** Last 9 digits: 0555 12 34 56, +213 555 12 34 56 and 213555123456 all match. */
-    private static function phoneKey(?string $phone): string
+    public static function phoneKey(?string $phone): string
     {
         $digits = preg_replace('/\D/', '', (string) $phone);
 

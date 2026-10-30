@@ -225,7 +225,7 @@ class DoctorScheduleTest extends TestCase
 
         $book = fn (string $name) => $this->postJson("/api/appointment/{$eventId}", [
             'name' => $name, 'lastName' => 'بن علي', 'birthday' => '1990-05-05', 'state' => 'Adrar', 'city' => 'Adrar',
-            'phone' => '0555000111', 'phone2' => '0555000222', 'sex' => '0',
+            'phone' => '0555000111', 'phone2' => '0555000222', 'sex' => '0', 'data_consent' => '1',
             'specialties' => [['event_specialty_id' => $slot->es_id, 'day_id' => $slot->day_id, 'hour_id' => $slot->hour_id]],
         ]);
 

@@ -44,6 +44,7 @@ class AppointmentArchive extends Model
         'archived_at',
         'archived_reason',
         'medical_documents',
+        'data_consent_at',
     ];
 
     protected $casts = [
