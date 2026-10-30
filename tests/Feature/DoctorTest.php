@@ -48,6 +48,7 @@ class DoctorTest extends TestCase
         return $override + [
             'first_name' => 'أمين',
             'family_name' => 'بن علي',
+            'sex' => 'male',
             'phone' => chunk_split($this->phone, 2, ' '), // spaces are stripped
             'wilaya_code' => '16',
             'specialty_id' => $this->specialtyId,
@@ -157,5 +158,21 @@ class DoctorTest extends TestCase
         $this->postJson('/api/doctors', $this->payload())->assertCreated();
 
         $this->deleteJson("/api/specialty/{$this->specialtyId}")->assertStatus(409);
+    }
+
+    public function test_phone_is_optional_and_sex_is_required(): void
+    {
+        Sanctum::actingAs($this->user(User::ROLE_SUPER_ADMIN));
+
+        $id = $this->postJson('/api/doctors', $this->payload(['phone' => '', 'sex' => 'female']))->assertCreated()->json('doctor.id');
+        $this->assertNull(Doctor::find($id)->phone);
+        $this->assertSame('female', Doctor::find($id)->sex);
+        // Two doctors without a phone are not a duplicate
+        $this->postJson('/api/doctors', $this->payload(['phone' => null, 'first_name' => 'سارة']))->assertCreated();
+
+        $payload = $this->payload();
+        unset($payload['sex']);
+        $this->postJson('/api/doctors', $payload)->assertJsonValidationErrors('sex');
+        $this->postJson('/api/doctors', $this->payload(['sex' => 'x']))->assertJsonValidationErrors('sex');
     }
 }

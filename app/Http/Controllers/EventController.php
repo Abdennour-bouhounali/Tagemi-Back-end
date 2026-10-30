@@ -802,11 +802,11 @@ public function index()
 
                 if ($allDayDates->isNotEmpty()) {
                     $event->start_date = $allDayDates->min();
-                    $event->end_date = $allDayDates->max();
+                    $event->end_date ??= $allDayDates->max();
                 } else {
                     // Fallback to event date if no days
                     $event->start_date = $event->date;
-                    $event->end_date = $event->date;
+                    $event->end_date ??= $event->date;
                 }
 
                 // Clean up the response
@@ -968,6 +968,25 @@ public function index()
     }
 
     /**
+     * Refuses a doctors' schedule with a day outside the event's dates.
+     *
+     * @throws RuleException
+     */
+    private function assertWithinEvent(Event $event, array $schedule): void
+    {
+        $start = $event->date->format('Y-m-d');
+        $end = ($event->end_date ?? $event->date)->format('Y-m-d');
+        foreach ($schedule as $entry) {
+            foreach ($entry['days'] as $day) {
+                $date = date('Y-m-d', strtotime($day['day_date']));
+                if ($date < $start || $date > $end) {
+                    throw new RuleException("اليوم {$date} خارج تواريخ الحدث ({$start} إلى {$end})");
+                }
+            }
+        }
+    }
+
+    /**
      * Store a new event with automatic admin creation
      */
    public function store(Request $request, DoctorScheduleService $schedules)
@@ -975,6 +994,7 @@ public function index()
             $validator = Validator::make($request->all(), self::SCHEDULE_RULES + [
         'name' => 'required|string|max:255',
         'date' => 'required|date',
+        'end_date' => 'nullable|date|after_or_equal:date',
         'state' => 'nullable|string|max:255',
         'city' => 'nullable|string|max:255',
         'description' => 'nullable|string',
@@ -1016,6 +1036,7 @@ public function index()
     $event = Event::create([
         'name' => $request->name,
         'date' => $request->date,
+        'end_date' => $request->end_date ?: $request->date,
         'state' => $request->state,
         'city' => $request->city,
         'description' => $request->description,
@@ -1048,6 +1069,7 @@ public function index()
                 ]);
 
             if (!empty($specData['schedule'])) {
+                $this->assertWithinEvent($event, $specData['schedule']);
                 $schedules->validate((int) $specData['id'], $specData['schedule']);
                 $schedules->sync($eventSpecialty, $specData['schedule']);
                 continue;
@@ -1142,6 +1164,7 @@ public function index()
     $validated = $request->validate([
         'name' => 'required|string|max:255',
         'date' => 'required|date',
+        'end_date' => 'nullable|date|after_or_equal:date',
         'state' => 'nullable|string|max:255',
         'city' => 'nullable|string|max:255',
         'description' => 'nullable|string',
@@ -1188,6 +1211,7 @@ public function updateFull(Request $request, $id, DoctorScheduleService $schedul
     $validator = Validator::make($request->all(), self::SCHEDULE_RULES + [
         'name' => 'required|string|max:255',
         'date' => 'required|date',
+        'end_date' => 'nullable|date|after_or_equal:date',
         'state' => 'nullable|string|max:255',
         'city' => 'nullable|string|max:255',
         'description' => 'nullable|string',
@@ -1230,6 +1254,8 @@ public function updateFull(Request $request, $id, DoctorScheduleService $schedul
         $event->update([
             'name' => $request->name,
             'date' => $request->date,
+            // Older clients send no end date: keep the stored one, never before the start
+            'end_date' => $request->end_date ?: max(substr($request->date, 0, 10), $event->end_date?->format('Y-m-d') ?? ''),
             'state' => $request->state,
             'city' => $request->city,
             'description' => $request->description,
@@ -1276,7 +1302,8 @@ public function updateFull(Request $request, $id, DoctorScheduleService $schedul
 
                 if (!empty($specData['schedule'])) {
                     $keptDoctorIds = $eventSpecialty->doctors()->pluck('doctors.id')->map(fn ($v) => (int) $v)->all();
-                    $schedules->validate((int) $specData['id'], $specData['schedule'], $keptDoctorIds);
+                    $this->assertWithinEvent($event, $specData['schedule']);
+                $schedules->validate((int) $specData['id'], $specData['schedule'], $keptDoctorIds);
                     $schedules->sync($eventSpecialty, $specData['schedule']);
                     continue;
                 }

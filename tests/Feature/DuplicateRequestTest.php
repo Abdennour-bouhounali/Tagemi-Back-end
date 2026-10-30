@@ -98,7 +98,7 @@ class DuplicateRequestTest extends TestCase
         Sanctum::actingAs($admin);
 
         $payload = [
-            'first_name' => 'أمين', 'family_name' => 'بن علي', 'phone' => '07' . random_int(10000000, 99999999),
+            'first_name' => 'أمين', 'family_name' => 'بن علي', 'sex' => 'male', 'phone' => '07' . random_int(10000000, 99999999),
             'wilaya_code' => '16', 'specialty_id' => DB::table('specialties')->value('id'), 'sector' => 'public',
         ];
         $first = $this->postJson('/api/doctors', $payload)->assertCreated();

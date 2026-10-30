@@ -180,7 +180,7 @@ class DoctorScheduleTest extends TestCase
         $this->book($eventId, '08:00:00');
 
         $update = fn (array $schedule) => $this->putJson("/api/events/{$eventId}/full", [
-            'name' => 'قافلة', 'date' => $this->date,
+            'name' => 'قافلة', 'date' => $this->date, 'end_date' => '2030-03-11',
             'specialties' => [['id' => $this->specialtyId, 'eventSpecialtyId' => $esId, 'schedule' => $schedule]],
         ]);
 
@@ -253,5 +253,29 @@ class DoctorScheduleTest extends TestCase
                 ['day_date' => $this->date, 'number_per_hour' => 5, 'hours' => [['time' => '08:00:00'], ['time' => '09:00:00']]],
             ]]],
         ])->assertCreated();
+    }
+
+    public function test_event_end_date_bounds_the_doctors_days(): void
+    {
+        $next = date('Y-m-d', strtotime($this->date . ' +1 day'));
+        $later = date('Y-m-d', strtotime($this->date . ' +5 days'));
+        $day = fn (string $date) => ['day_date' => $date, 'intervals' => [$this->interval('08:00', '09:00', 20)]];
+        $post = fn (string $end, string $dayDate) => $this->postJson('/api/events', [
+            'name' => 'قافلة', 'date' => $this->date, 'end_date' => $end,
+            'specialties' => [['id' => $this->specialtyId, 'schedule' => [
+                ['doctor_id' => $this->drA->id, 'days' => [$day($this->date), $day($dayDate)]],
+            ]]],
+        ]);
+
+        $id = $post($next, $next)->assertCreated()->json('event.id');
+        $this->assertSame($next, DB::table('events')->where('id', $id)->value('end_date'));
+
+        $post($next, $later)->assertStatus(422)->assertJsonFragment(['message' => "اليوم {$later} خارج تواريخ الحدث ({$this->date} إلى {$next})"]);
+        $this->postJson('/api/events', ['name' => 'x', 'date' => $next, 'end_date' => $this->date, 'specialties' => [['id' => $this->specialtyId, 'schedule' => $this->schedule()]]])
+            ->assertStatus(422)->assertJsonValidationErrors('end_date');
+
+        // Without an end date the event lasts one day
+        $id = $this->event($this->schedule())->assertCreated()->json('event.id');
+        $this->assertSame($this->date, DB::table('events')->where('id', $id)->value('end_date'));
     }
 }

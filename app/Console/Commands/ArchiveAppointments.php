@@ -102,7 +102,7 @@ class ArchiveAppointments extends Command
         $endedEvents = Event::where('is_simulation', false)
                            ->where('is_active', false)
                            ->where('is_archived', false)
-                           ->where('date', '<', now())
+                           ->whereRaw('COALESCE(end_date, date) < ?', [now()])
                            ->get();
 
         if ($endedEvents->isEmpty()) {
@@ -120,7 +120,7 @@ class ArchiveAppointments extends Command
     private function interactiveArchive()
     {
         $endedEvents = Event::where('is_simulation', false)
-                           ->where('date', '<', now())
+                           ->whereRaw('COALESCE(end_date, date) < ?', [now()])
                            ->where('is_archived', false)
                            ->get();
 

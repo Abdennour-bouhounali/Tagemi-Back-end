@@ -11,9 +11,12 @@ class Doctor extends Model
 
     public const SECTORS = ['public', 'private', 'both'];
 
+    public const SEXES = ['male', 'female'];
+
     protected $fillable = [
         'first_name',
         'family_name',
+        'sex',
         'phone',
         'wilaya_code',
         'specialty_id',

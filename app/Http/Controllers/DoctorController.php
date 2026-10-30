@@ -181,19 +181,21 @@ class DoctorController extends Controller
 
     private function validated(Request $request, ?Doctor $doctor = null): array
     {
-        $request->merge(['phone' => preg_replace('/\D/', '', (string) $request->input('phone'))]);
+        // The phone is optional: spaces and dashes are stripped, empty means none
+        $request->merge(['phone' => preg_replace('/\D/', '', (string) $request->input('phone')) ?: null]);
 
         return $request->validate([
             'first_name' => 'required|string|max:100',
             'family_name' => 'required|string|max:100',
-            'phone' => ['required', 'regex:/^0[2-7]\d{7,8}$/', Rule::unique('doctors', 'phone')->ignore($doctor?->id)],
+            'sex' => ['required', Rule::in(Doctor::SEXES)],
+            'phone' => ['nullable', 'regex:/^0[2-7]\d{7,8}$/', Rule::unique('doctors', 'phone')->ignore($doctor?->id)],
             'wilaya_code' => ['required', 'regex:/^(0[1-9]|[1-4]\d|5[0-8])$/'],
             'specialty_id' => 'required|exists:specialties,id',
             'sector' => ['required', Rule::in(Doctor::SECTORS)],
         ], [
             'first_name.*' => 'اكتب الاسم',
             'family_name.*' => 'اكتب اللقب',
-            'phone.required' => 'اكتب رقم الهاتف',
+            'sex.*' => 'اختر الجنس',
             'phone.regex' => 'رقم الهاتف غير صحيح (مثال: 0555123456)',
             'phone.unique' => 'رقم الهاتف مسجل لطبيب آخر',
             'wilaya_code.*' => 'اختر الولاية',

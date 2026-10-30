@@ -11,6 +11,7 @@ class Event extends Model
     protected $fillable = [
         'name',
         'date',
+        'end_date',
         'state', 
         'city',
         'type',
@@ -28,6 +29,7 @@ class Event extends Model
 
     protected $casts = [
         'date' => 'date',
+        'end_date' => 'date',
         'is_active' => 'boolean',
         'is_archived' => 'boolean',
         'is_tawat' => 'boolean',
