@@ -261,6 +261,10 @@ class EventDaySimulationTest extends TestCase
         for ($guard = 0; $guard < 2000; $guard++) {
             $didSomething = false;
             foreach (QueueService::scopeToday(Appointment::query())->where('event_id', $this->eventId)->where('status', 'Entered')->get() as $a) {
+                // A family passes together: the others are done once the first one passed
+                if (Appointment::whereKey($a->id)->value('status') !== 'Entered') {
+                    continue;
+                }
                 $this->as('officer', 'POST', "/api/waitinglist/Complete/{$a->id}")->assertOk();
                 $didSomething = true;
             }
