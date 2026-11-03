@@ -298,6 +298,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/whatsapp/campaigns/{id}', [WhatsAppController::class, 'show'])->whereNumber('id');
         Route::post('/whatsapp/campaigns/{id}/send-next', [WhatsAppController::class, 'sendNext'])->whereNumber('id');
         Route::post('/whatsapp/campaigns/{id}/retry', [WhatsAppController::class, 'retry'])->whereNumber('id');
+        // Manual: typed message, opened one by one in WhatsApp (no API)
+        Route::post('/events/{eventId}/whatsapp/manual/preview', [WhatsAppController::class, 'manualPreview'])->whereNumber('eventId');
+        Route::post('/events/{eventId}/whatsapp/manual', [WhatsAppController::class, 'storeManual'])->whereNumber('eventId');
+        Route::post('/whatsapp/messages/{id}/opened', [WhatsAppController::class, 'markOpened'])->whereNumber('id');
     });
     // Visit day: open a specialty's queue when its doctor is there
     Route::middleware('role:super_admin')->group(function () {

@@ -53,7 +53,118 @@ class WhatsAppController extends Controller
             'error' => $error,
             'webhook_url' => url('/api/whatsapp/webhook'),
             'fields' => WhatsAppAudience::FIELDS,
+            'tokens' => array_keys(WhatsAppAudience::TOKENS),
         ]);
+    }
+
+    /**
+     * Manual sending (no API): a typed message with {tokens}, personalised per
+     * patient; the admin opens each one in WhatsApp (wa.me) and presses send.
+     * POST /api/events/{eventId}/whatsapp/manual/preview
+     */
+    public function manualPreview(Request $request, $eventId)
+    {
+        $event = Event::findOrFail((int) $eventId);
+        $data = $this->validatedManual($request);
+        $patients = $this->audience->patients($event, $data['filters']);
+
+        $withoutPhone = 0;
+        $samples = [];
+        foreach ($patients as $patientId => $appointments) {
+            $phone = $this->audience->phoneOf($appointments);
+            if (!$phone) {
+                $withoutPhone++;
+            }
+            if (count($samples) < 3) {
+                $samples[] = [
+                    'patient_id' => (int) $patientId,
+                    'full_name' => $appointments->first()->full_name,
+                    'phone' => $phone,
+                    'text' => $this->audience->renderText($data['text'], $this->audience->values($event, $appointments)),
+                ];
+            }
+        }
+
+        return response()->json(['count' => $patients->count(), 'without_phone' => $withoutPhone, 'samples' => $samples]);
+    }
+
+    /** POST /api/events/{eventId}/whatsapp/manual: the list to open one by one. */
+    public function storeManual(Request $request, $eventId)
+    {
+        $event = Event::findOrFail((int) $eventId);
+        $data = $this->validatedManual($request) + $request->validate(['mark_reminded' => 'boolean']);
+        $patients = $this->audience->patients($event, $data['filters']);
+        if ($patients->isEmpty()) {
+            throw new RuleException('لا يوجد زائر يطابق الاختيار', 422);
+        }
+
+        $campaign = DB::transaction(function () use ($event, $data, $patients, $request) {
+            $campaign = WhatsAppCampaign::create([
+                'event_id' => $event->id,
+                'user_id' => $request->user()->id,
+                'channel' => 'manual',
+                'template_name' => 'رسالة يدوية',
+                'template_language' => '-',
+                'template_body' => $data['text'],
+                'variables' => [],
+                'filters' => $data['filters'],
+                'mark_reminded' => (bool) ($data['mark_reminded'] ?? false),
+                'status' => 'sending',
+                'total' => $patients->count(),
+            ]);
+
+            $now = now();
+            $rows = [];
+            foreach ($patients as $patientId => $appointments) {
+                $phone = $this->audience->phoneOf($appointments);
+                $rows[] = [
+                    'campaign_id' => $campaign->id,
+                    'event_id' => $event->id,
+                    'patient_id' => (int) $patientId,
+                    'full_name' => $appointments->first()->full_name,
+                    'phone' => $phone ?? mb_substr(preg_replace('/\D/', '', (string) $appointments->first()->phone), 0, 20),
+                    'params' => json_encode([
+                        'text' => $this->audience->renderText($data['text'], $this->audience->values($event, $appointments)),
+                    ], JSON_UNESCAPED_UNICODE),
+                    'status' => $phone ? 'pending' : 'failed',
+                    'error' => $phone ? null : self::BAD_PHONE,
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ];
+            }
+            foreach (array_chunk($rows, 500) as $chunk) {
+                WhatsAppMessage::insert($chunk);
+            }
+
+            return $campaign;
+        });
+
+        return response()->json(['campaign' => $this->summary($campaign)], 201);
+    }
+
+    /**
+     * POST /api/whatsapp/messages/{id}/opened: the admin opened this patient's
+     * message in WhatsApp (counted as sent; WhatsApp tells us nothing more).
+     */
+    public function markOpened($id)
+    {
+        $message = WhatsAppMessage::with('campaign')->findOrFail($id);
+        if ($message->campaign->channel !== 'manual') {
+            throw new RuleException('هذه الرسالة تُرسل عبر واجهة واتساب', 422);
+        }
+        if ($message->status === 'pending') {
+            $message->update(['status' => 'sent', 'sent_at' => now()]);
+            if ($message->campaign->mark_reminded) {
+                Appointment::where('event_id', $message->event_id)->where('patient_id', $message->patient_id)
+                    ->update(['is_reminded' => true, 'reminded_at' => now()]);
+            }
+        }
+        $campaign = $message->campaign;
+        if ($campaign->status !== 'done' && !$campaign->messages()->where('status', 'pending')->exists()) {
+            $campaign->update(['status' => 'done']);
+        }
+
+        return response()->json(['campaign' => $this->summary($campaign->fresh())]);
     }
 
     /** GET /api/whatsapp/templates */
@@ -165,6 +276,9 @@ class WhatsAppController extends Controller
     {
         $this->assertConfigured();
         $campaign = WhatsAppCampaign::findOrFail($id);
+        if ($campaign->channel === 'manual') {
+            throw new RuleException('الرسائل اليدوية تُفتح واحدة واحدة في واتساب', 422);
+        }
 
         // A page closed in the middle of a batch: its rows go back in line after 2 minutes
         WhatsAppMessage::where('campaign_id', $campaign->id)->where('status', 'sending')
@@ -193,6 +307,9 @@ class WhatsAppController extends Controller
     public function retry($id)
     {
         $campaign = WhatsAppCampaign::findOrFail($id);
+        if ($campaign->channel === 'manual') {
+            throw new RuleException('الرسائل اليدوية لا يُعاد إرسالها تلقائياً', 422);
+        }
         $count = WhatsAppMessage::where('campaign_id', $campaign->id)->where('status', 'failed')
             ->where(fn ($q) => $q->whereNull('error')->orWhere('error', '!=', self::BAD_PHONE))
             ->update(['status' => 'pending', 'error' => null]);
@@ -218,7 +335,14 @@ class WhatsAppController extends Controller
     {
         $campaign = WhatsAppCampaign::with('user:id,name')->findOrFail($id);
         $messages = $campaign->messages()->orderBy('id')
-            ->get(['id', 'patient_id', 'full_name', 'phone', 'status', 'error', 'sent_at', 'delivered_at', 'read_at']);
+            ->get(['id', 'patient_id', 'full_name', 'phone', 'params', 'status', 'error', 'sent_at', 'delivered_at', 'read_at'])
+            ->map(function ($m) use ($campaign) {
+                $row = $m->only(['id', 'patient_id', 'full_name', 'phone', 'status', 'error', 'sent_at', 'delivered_at', 'read_at']);
+                // Manual: the personalised text to open in WhatsApp
+                $row['text'] = $campaign->channel === 'manual' ? ($m->params['text'] ?? '') : null;
+
+                return $row;
+            });
 
         return response()->json(['campaign' => $this->summary($campaign), 'messages' => $messages]);
     }
@@ -319,6 +443,28 @@ class WhatsAppController extends Controller
         }
     }
 
+    private function validatedManual(Request $request): array
+    {
+        return $request->validate(['text' => 'required|string|max:4000'] + $this->filterRules());
+    }
+
+    private function filterRules(): array
+    {
+        return [
+            'filters' => 'present|array',
+            'filters.specialties' => 'array',
+            'filters.specialties.*' => 'integer',
+            'filters.days' => 'array',
+            'filters.days.*' => 'date_format:Y-m-d',
+            'filters.statuses' => 'array',
+            'filters.statuses.*' => 'in:' . implode(',', array_keys(WhatsAppAudience::STATUS_GROUPS)),
+            'filters.reminded' => 'nullable|in:all,yes,no',
+            'filters.patient_ids' => 'array',
+            'filters.patient_ids.*' => 'integer',
+            'filters.skip_already_sent' => 'boolean',
+        ];
+    }
+
     private function validated(Request $request): array
     {
         $data = $request->validate([
@@ -391,6 +537,7 @@ class WhatsAppController extends Controller
         return [
             'id' => $campaign->id,
             'event_id' => $campaign->event_id,
+            'channel' => $campaign->channel ?? 'api',
             'template_name' => $campaign->template_name,
             'template_language' => $campaign->template_language,
             'template_body' => $campaign->template_body,

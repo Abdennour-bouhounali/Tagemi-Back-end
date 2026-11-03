@@ -18,6 +18,8 @@ return new class extends Migration
             $table->id();
             $table->foreignId('event_id')->constrained()->cascadeOnDelete();
             $table->foreignId('user_id')->nullable()->constrained()->nullOnDelete();
+            // api: sent by the Cloud API; manual: typed text, opened one by one in WhatsApp by the admin
+            $table->string('channel', 10)->default('api');
             $table->string('template_name');
             $table->string('template_language', 15);
             $table->text('template_body')->nullable();   // the approved text, kept for the history

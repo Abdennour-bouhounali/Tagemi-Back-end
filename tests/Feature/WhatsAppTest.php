@@ -276,6 +276,43 @@ class WhatsAppTest extends TestCase
         }
     }
 
+    public function test_manual_message_works_without_the_api(): void
+    {
+        config(['services.whatsapp.token' => null]); // not connected: manual still works
+        Http::fake();
+        [$eyes, $heart] = array_keys($this->es);
+        $a = $this->patient([$eyes, $heart]);
+        $this->patient([$heart]);
+        $bad = $this->patient([$eyes], '99');
+
+        $text = "السلام عليكم {الاسم_الكامل}، رقمكم {رقم_الزائر}\n{المواعيد}\n{غير_معروف}";
+        $preview = $this->postJson("/api/events/{$this->eventId}/whatsapp/manual/preview", ['text' => $text, 'filters' => ['specialties' => [$eyes]]])
+            ->assertOk();
+        $this->assertSame(2, $preview->json('count'));
+        $this->assertSame(1, $preview->json('without_phone'));
+        $sample = $preview->json('samples.0.text');
+        $this->assertStringContainsString("السلام عليكم محمد بن علي {$a}، رقمكم {$a}\n1. " . $this->specialtyName($eyes), $sample);
+        $this->assertStringContainsString("\n2. " . $this->specialtyName($heart), $sample); // one appointment per line
+        $this->assertStringContainsString('{غير_معروف}', $sample); // unknown token left as typed
+
+        $campaign = $this->postJson("/api/events/{$this->eventId}/whatsapp/manual", ['text' => $text, 'filters' => ['specialties' => [$eyes]], 'mark_reminded' => true])
+            ->assertCreated()->json('campaign');
+        $this->assertSame('manual', $campaign['channel']);
+        $this->postJson("/api/whatsapp/campaigns/{$campaign['id']}/send-next")->assertStatus(422);
+
+        $messages = $this->getJson("/api/whatsapp/campaigns/{$campaign['id']}")->assertOk()->json('messages');
+        $first = collect($messages)->firstWhere('patient_id', $a);
+        $this->assertSame('213555123456', $first['phone']);
+        $this->assertStringContainsString("رقمكم {$a}", $first['text']);
+        $this->assertSame('failed', collect($messages)->firstWhere('patient_id', $bad)['status']);
+
+        $after = $this->postJson("/api/whatsapp/messages/{$first['id']}/opened")->assertOk()->json('campaign');
+        $this->assertSame(1, $after['counts']['sent']);
+        $this->assertSame('done', $after['status']); // the only other one has a bad number
+        $this->assertTrue((bool) Appointment::where('patient_id', $a)->first()->is_reminded);
+        Http::assertNothingSent();
+    }
+
     public function test_phone_numbers_become_international(): void
     {
         $this->assertSame('213555123456', WhatsAppClient::normalizePhone('0555 12 34 56'));

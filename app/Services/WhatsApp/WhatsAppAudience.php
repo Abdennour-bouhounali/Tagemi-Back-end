@@ -30,6 +30,21 @@ class WhatsAppAudience
         'my_turn_link' => 'رابط متابعة الدور',
     ];
 
+    /** Tokens of a typed (manual) message: {الاسم_الكامل} → full_name … */
+    public const TOKENS = [
+        'الاسم_الكامل' => 'full_name',
+        'الاسم' => 'first_name',
+        'رقم_الزائر' => 'patient_id',
+        'الحدث' => 'event_name',
+        'التخصصات' => 'specialties',
+        'التاريخ' => 'date',
+        'الساعة' => 'time',
+        'ساعة_الحضور' => 'arrival_time',
+        'المواعيد' => 'appointments_lines',
+        'رابط_التقييم' => 'evaluation_link',
+        'رابط_الدور' => 'my_turn_link',
+    ];
+
     /** Status groups the UI filters on (same groups as the presence desk). */
     public const STATUS_GROUPS = [
         'pending' => ['Pending'],
@@ -111,6 +126,14 @@ class WhatsAppAudience
             'appointments' => $sorted->map(fn ($a) => trim(($a->eventSpecialty?->specialty?->name ?? '') . ' '
                 . ($a->day?->day_date ? Carbon::parse($a->day->day_date)->format('Y-m-d') : '') . ' '
                 . ($a->hour?->time ? substr((string) $a->hour->time, 0, 5) : '')))->implode(' • '),
+            // Typed messages may have line breaks: one appointment per line, with the arrival hour
+            'appointments_lines' => $sorted->values()->map(function ($a, $i) {
+                $t = $a->hour?->time ? substr((string) $a->hour->time, 0, 5) : null;
+
+                return ($i + 1) . '. ' . ($a->eventSpecialty?->specialty?->name ?? '')
+                    . ($a->day?->day_date ? ' — ' . Carbon::parse($a->day->day_date)->format('Y-m-d') : '')
+                    . ($t ? " الساعة {$t}، الحضور " . Carbon::createFromFormat('H:i', $t)->subHour()->format('H:i') : '');
+            })->implode("\n"),
             'evaluation_link' => "{$front}/evaluation/{$event->id}/{$first->id}",
             'my_turn_link' => "{$front}/my-turn/{$event->id}",
         ];
@@ -128,6 +151,16 @@ class WhatsAppAudience
 
             return WhatsAppClient::cleanParameter($v['text'] ?? '');
         })->all();
+    }
+
+    /** A typed message for one patient: {token} replaced by their data; unknown tokens stay as typed. */
+    public function renderText(string $text, array $values): string
+    {
+        return preg_replace_callback('/\{([^{}\s]+)\}/u', function ($m) use ($values) {
+            $field = self::TOKENS[$m[1]] ?? null;
+
+            return $field !== null ? (string) ($values[$field] ?? '') : $m[0];
+        }, $text);
     }
 
     /** The phone to send to: the main one, else the second one. */

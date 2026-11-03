@@ -43,6 +43,9 @@ class AdminAction extends Model
         'WhatsAppController@store' => 'أنشأ إرسال واتساب',
         'WhatsAppController@sendNext' => 'أرسل دفعة رسائل واتساب',
         'WhatsAppController@retry' => 'أعاد إرسال رسائل واتساب الفاشلة',
+        'WhatsAppController@manualPreview' => 'عاين رسالة واتساب يدوية',
+        'WhatsAppController@storeManual' => 'أنشأ قائمة رسائل واتساب يدوية',
+        'WhatsAppController@markOpened' => 'فتح رسالة واتساب يدوية لزائر',
         'UserController@setSpecialtyLimitOverride' => 'غيّر صلاحية تجاوز عدد التخصصات',
         // Queues
         'WaitingListController@Special' => 'سجّل حالة خاصة',
