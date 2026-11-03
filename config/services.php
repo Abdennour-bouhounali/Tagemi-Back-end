@@ -35,4 +35,19 @@ return [
         ],
     ],
 
+    // WhatsApp Cloud API (Meta): messages to patients from approved templates
+    'whatsapp' => [
+        'token' => env('WHATSAPP_TOKEN'),                     // System User permanent token
+        'phone_number_id' => env('WHATSAPP_PHONE_NUMBER_ID'), // the sending number
+        'business_account_id' => env('WHATSAPP_BUSINESS_ACCOUNT_ID'), // WABA: where the templates live
+        'app_secret' => env('WHATSAPP_APP_SECRET'),           // checks the webhook signature
+        'verify_token' => env('WHATSAPP_VERIFY_TOKEN'),       // chosen by us, typed in Meta's webhook form
+        'api_version' => env('WHATSAPP_API_VERSION', 'v23.0'),
+        'graph_url' => env('WHATSAPP_GRAPH_URL', 'https://graph.facebook.com'), // changed only to test against a fake
+        'country_code' => env('WHATSAPP_DEFAULT_COUNTRY_CODE', '213'),
+    ],
+
+    // Public site (links sent to patients, e.g. the evaluation form)
+    'frontend_url' => env('FRONTEND_URL', 'https://tagemi-foundation.org'),
+
 ];

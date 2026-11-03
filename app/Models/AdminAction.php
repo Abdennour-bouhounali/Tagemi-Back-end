@@ -39,6 +39,10 @@ class AdminAction extends Model
         'AppointmentController@deleteAllTestAppointments' => 'حذف المواعيد التجريبية',
         'PatientMergeController@merge' => 'دمج تسجيلاً مكرراً',
         'QuickRegistrationController@store' => 'أضاف تسجيلات من مكتب الحضور',
+        'WhatsAppController@preview' => 'عاين رسالة واتساب',
+        'WhatsAppController@store' => 'أنشأ إرسال واتساب',
+        'WhatsAppController@sendNext' => 'أرسل دفعة رسائل واتساب',
+        'WhatsAppController@retry' => 'أعاد إرسال رسائل واتساب الفاشلة',
         'UserController@setSpecialtyLimitOverride' => 'غيّر صلاحية تجاوز عدد التخصصات',
         // Queues
         'WaitingListController@Special' => 'سجّل حالة خاصة',

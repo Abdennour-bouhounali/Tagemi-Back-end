@@ -9,6 +9,7 @@ use App\Http\Controllers\DoctorController;
 use App\Http\Controllers\DoctorAttendanceController;
 use App\Http\Controllers\PatientMergeController;
 use App\Http\Controllers\QuickRegistrationController;
+use App\Http\Controllers\WhatsAppController;
 use App\Http\Controllers\AdminActionController;
 use App\Http\Controllers\UsefulController;
 use App\Http\Controllers\SpecialtyController;
@@ -80,6 +81,10 @@ Route::prefix('evaluations')->group(function () {
 // Public contact / volunteer forms
 Route::post('/contacts', [ContactController::class, 'store'])->middleware('throttle:public-forms');
 Route::post('/volunteers', [VolunteerController::class, 'store'])->middleware('throttle:public-forms');
+
+// WhatsApp Cloud API webhook (Meta): URL check, then delivery statuses (signed with the app secret)
+Route::get('/whatsapp/webhook', [WhatsAppController::class, 'verifyWebhook']);
+Route::post('/whatsapp/webhook', [WhatsAppController::class, 'receiveWebhook']);
 
 // Public content (read only)
 Route::apiResource('types', TypeController::class)->only(['index', 'show']);
@@ -283,6 +288,16 @@ Route::middleware('auth:sanctum')->group(function () {
             ->whereNumber('id')->middleware('event.access:appointment,id');
         // Audit trail: every change and login of the staff, who and when
         Route::get('/admin-actions', [AdminActionController::class, 'index']);
+
+        // WhatsApp messages to patients (Cloud API, approved templates)
+        Route::get('/whatsapp/status', [WhatsAppController::class, 'status']);
+        Route::get('/whatsapp/templates', [WhatsAppController::class, 'templates']);
+        Route::post('/events/{eventId}/whatsapp/preview', [WhatsAppController::class, 'preview'])->whereNumber('eventId');
+        Route::get('/events/{eventId}/whatsapp/campaigns', [WhatsAppController::class, 'index'])->whereNumber('eventId');
+        Route::post('/events/{eventId}/whatsapp/campaigns', [WhatsAppController::class, 'store'])->whereNumber('eventId');
+        Route::get('/whatsapp/campaigns/{id}', [WhatsAppController::class, 'show'])->whereNumber('id');
+        Route::post('/whatsapp/campaigns/{id}/send-next', [WhatsAppController::class, 'sendNext'])->whereNumber('id');
+        Route::post('/whatsapp/campaigns/{id}/retry', [WhatsAppController::class, 'retry'])->whereNumber('id');
     });
     // Visit day: open a specialty's queue when its doctor is there
     Route::middleware('role:super_admin')->group(function () {
