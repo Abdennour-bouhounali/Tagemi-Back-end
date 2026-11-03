@@ -55,12 +55,19 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            'can_exceed_specialty_limit' => 'boolean',
         ];
     }
 
     public function hasRole(int ...$roleIds): bool
     {
         return in_array((int) $this->role_id, $roleIds, true);
+    }
+
+    /** Super admin, or an account the super admin allowed to book past the event's specialty limit. */
+    public function canExceedSpecialtyLimit(): bool
+    {
+        return $this->isSuperAdmin() || (bool) $this->can_exceed_specialty_limit;
     }
 
     public function isSuperAdmin(): bool

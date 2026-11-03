@@ -38,6 +38,8 @@ class AdminAction extends Model
         'AppointmentController@resetTestAppointmentsStatus' => 'صفّر المواعيد التجريبية',
         'AppointmentController@deleteAllTestAppointments' => 'حذف المواعيد التجريبية',
         'PatientMergeController@merge' => 'دمج تسجيلاً مكرراً',
+        'QuickRegistrationController@store' => 'أضاف تسجيلات من مكتب الحضور',
+        'UserController@setSpecialtyLimitOverride' => 'غيّر صلاحية تجاوز عدد التخصصات',
         // Queues
         'WaitingListController@Special' => 'سجّل حالة خاصة',
         'WaitingListController@moveToFront' => 'قدّم زائراً إلى المركز 3',

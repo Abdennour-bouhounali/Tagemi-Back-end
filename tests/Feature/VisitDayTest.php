@@ -479,9 +479,11 @@ class VisitDayTest extends TestCase
         $this->postJson("/api/appointments/{$p['ids'][0]}/add-specialty", [
             'event_specialty_id' => $c, 'day_id' => $this->es[$c]['tomorrow'][0], 'hour_id' => $this->es[$c]['tomorrow'][1],
         ])->assertCreated();
-        $this->postJson("/api/appointments/{$p['ids'][0]}/add-specialty", [
+        // Past the limit: the super admin may, the appointment is marked beyond_limit
+        $extra = $this->postJson("/api/appointments/{$p['ids'][0]}/add-specialty", [
             'event_specialty_id' => $d, 'day_id' => $this->es[$d]['tomorrow'][0], 'hour_id' => $this->es[$d]['tomorrow'][1],
-        ])->assertStatus(422);
+        ])->assertCreated();
+        $this->assertTrue(Appointment::find($extra->json('appointment.id'))->beyond_limit);
     }
 
     public function test_delete_closes_queue_gap_promotes_next_and_is_logged(): void

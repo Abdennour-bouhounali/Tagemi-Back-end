@@ -1271,8 +1271,10 @@ private function handleMedicalDocuments(Request $request, $patientId)
     }
 
     /**
-     * Super admin: book one more specialty for a patient, up to the event's
-     * limit (nbr_of_allowed_specialties). Patient data is copied from their
+     * Super admin, or a reception account tagged by the super admin: book one
+     * more specialty for a patient. Up to the event's limit
+     * (nbr_of_allowed_specialties); past it only for the super admin and
+     * tagged accounts, and then the appointment is marked beyond_limit. Patient data is copied from their
      * appointment. POST /api/appointments/{id}/add-specialty
      */
     public function addSpecialty(Request $request, $id, QueueService $queues)
@@ -1283,7 +1285,13 @@ private function handleMedicalDocuments(Request $request, $patientId)
             'hour_id' => 'required|integer|exists:hours,id',
         ]);
 
-        return DB::transaction(function () use ($data, $id, $queues) {
+        // Reception: only the accounts the super admin tagged
+        $mayExceed = $request->user()->canExceedSpecialtyLimit();
+        if (!$mayExceed) {
+            throw new RuleException('إضافة تخصص متاحة للمدير العام ولمسؤولي الاستقبال المسموح لهم فقط', 403);
+        }
+
+        return DB::transaction(function () use ($data, $id, $queues, $mayExceed) {
             $source = Appointment::with('event')->findOrFail($id);
             $event = $source->event;
 
@@ -1292,7 +1300,8 @@ private function handleMedicalDocuments(Request $request, $patientId)
                 ->lockForUpdate()
                 ->get();
             $limit = max(1, (int) ($event->nbr_of_allowed_specialties ?? 1));
-            if ($booked->count() >= $limit) {
+            $beyondLimit = $booked->where('beyond_limit', false)->count() >= $limit;
+            if ($beyondLimit && !$mayExceed) {
                 throw new RuleException("هذا الحدث يسمح بـ {$limit} تخصص لكل زائر، والزائر حاجز العدد كاملاً", 422);
             }
             if ($booked->contains('event_specialty_id', (int) $data['event_specialty_id'])) {
@@ -1317,6 +1326,7 @@ private function handleMedicalDocuments(Request $request, $patientId)
                 'position' => $hour->counter + 1,
                 'orderList' => 0,
                 'is_special' => $booked->contains('is_special', true),
+                'beyond_limit' => $beyondLimit,
             ]));
             $hour->increment('counter');
             $queues->afterSlotChange($appointment);
@@ -1324,6 +1334,7 @@ private function handleMedicalDocuments(Request $request, $patientId)
             $appointment->load(['eventSpecialty.specialty', 'day', 'hour']);
             AppointmentLog::record('specialty_added', $appointment, $this->slotDetails($appointment) + [
                 'over_capacity' => $hour->counter > $hour->max_allowed,
+                'beyond_limit' => $beyondLimit,
             ]);
             $this->checkAndUpdateSaturation($appointment->eventSpecialty);
 

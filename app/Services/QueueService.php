@@ -1028,10 +1028,12 @@ class QueueService
     private function assertWithinLimit(int $eventId, int $patientId): void
     {
         $specialties = Appointment::where('event_id', $eventId)->where('patient_id', $patientId)->pluck('event_specialty_id');
+        // Appointments booked past the limit by an allowed account are not counted
+        $counted = Appointment::where('event_id', $eventId)->where('patient_id', $patientId)->where('beyond_limit', false)->count();
         $limit = max(1, (int) Event::whereKey($eventId)->value('nbr_of_allowed_specialties'));
 
-        if ($specialties->count() > $limit) {
-            throw new RuleException("للزائر {$specialties->count()} مواعيد والحدث يسمح بـ {$limit}. يحذف المشرف الزائد قبل تسجيل الحضور", 422);
+        if ($counted > $limit) {
+            throw new RuleException("للزائر {$counted} مواعيد والحدث يسمح بـ {$limit}. يحذف المشرف الزائد قبل تسجيل الحضور", 422);
         }
         if ($specialties->duplicates()->isNotEmpty()) {
             throw new RuleException('الزائر حاجز نفس التخصص مرتين. يحذف المشرف أحد الموعدين قبل تسجيل الحضور', 422);

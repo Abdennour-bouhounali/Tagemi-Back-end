@@ -563,7 +563,8 @@ class EventDaySimulationTest extends TestCase
         if ($today->contains(fn ($a) => $a->status !== 'Pending')) {
             return 409;
         }
-        if ($all->count() > 2 || $all->pluck('event_specialty_id')->duplicates()->isNotEmpty()) {
+        // Appointments added past the limit (marked beyond_limit) are not counted
+        if ($all->where('beyond_limit', false)->count() > 2 || $all->pluck('event_specialty_id')->duplicates()->isNotEmpty()) {
             return 422;
         }
 

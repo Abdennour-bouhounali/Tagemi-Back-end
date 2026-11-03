@@ -535,4 +535,24 @@ public function index()
             ], 500);
         }
     }
+
+    /**
+     * Super admin: allow (or not) a reception account to book patients more
+     * specialties than the event allows. PATCH /api/users/{id}/specialty-limit {allowed}
+     */
+    public function setSpecialtyLimitOverride(Request $request, $userId)
+    {
+        $data = $request->validate(['allowed' => 'required|boolean']);
+        $user = User::findOrFail($userId);
+        if ((int) $user->role_id !== User::ROLE_RECIPIENT_ADMIN) {
+            return response()->json(['message' => 'هذه الصلاحية لمسؤولي الاستقبال فقط'], 422);
+        }
+        $user->can_exceed_specialty_limit = $data['allowed'];
+        $user->save();
+
+        return response()->json([
+            'message' => $data['allowed'] ? 'يمكنه الآن تجاوز عدد التخصصات المسموح' : 'أُلغيت صلاحية تجاوز عدد التخصصات',
+            'user' => $user->load(['role', 'event']),
+        ]);
+    }
 }

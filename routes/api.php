@@ -8,6 +8,7 @@ use App\Http\Controllers\RuleController;
 use App\Http\Controllers\DoctorController;
 use App\Http\Controllers\DoctorAttendanceController;
 use App\Http\Controllers\PatientMergeController;
+use App\Http\Controllers\QuickRegistrationController;
 use App\Http\Controllers\AdminActionController;
 use App\Http\Controllers\UsefulController;
 use App\Http\Controllers\SpecialtyController;
@@ -264,11 +265,21 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/events/{id}/doctor-visits', [WaitingListController::class, 'doctorVisits'])
             ->whereNumber('id')->middleware('event.access:event,id');
     });
-    // Super admin: change an appointment's time, add a specialty
+    // Presence desk: add a specialty (super admin, and reception accounts the
+    // super admin tagged: they may also go past the event's specialty limit);
+    // type new registrations in a table (reception)
+    Route::middleware('role:super_admin,recipient_admin')->group(function () {
+        Route::post('/appointments/{id}/add-specialty', [AppointmentController::class, 'addSpecialty'])
+            ->whereNumber('id')->middleware('event.access:appointment,id');
+    });
+    Route::middleware('role:super_admin,special_admin,recipient_admin')->group(function () {
+        Route::post('/events/{eventId}/quick-registrations', [QuickRegistrationController::class, 'store'])
+            ->whereNumber('eventId')->middleware('event.access:event,eventId');
+    });
+
+    // Super admin: change an appointment's time
     Route::middleware('role:super_admin')->group(function () {
         Route::patch('/appointments/{id}/reschedule', [AppointmentController::class, 'reschedule'])
-            ->whereNumber('id')->middleware('event.access:appointment,id');
-        Route::post('/appointments/{id}/add-specialty', [AppointmentController::class, 'addSpecialty'])
             ->whereNumber('id')->middleware('event.access:appointment,id');
         // Audit trail: every change and login of the staff, who and when
         Route::get('/admin-actions', [AdminActionController::class, 'index']);
@@ -393,6 +404,7 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::get('/event/{eventId}', [UserController::class, 'getByEvent']);
             Route::get('/{id}', [UserController::class, 'show']);
             Route::put('/{id}', [UserController::class, 'update']);
+            Route::patch('/{id}/specialty-limit', [UserController::class, 'setSpecialtyLimitOverride']);
             Route::delete('/{id}', [UserController::class, 'destroy']);
             Route::post('/{id}/assign', [UserController::class, 'assignEvent']);
             Route::post('/{id}/unassign', [UserController::class, 'unassignEvent']);

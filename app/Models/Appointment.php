@@ -77,6 +77,7 @@ class Appointment extends Model
         'comment',
         'status',
         'is_special',
+        'beyond_limit', // booked past the event's specialty limit by an allowed account
         'is_test',
         'is_reminded', // NEW
         'reminded_at', // NEW
@@ -91,6 +92,7 @@ class Appointment extends Model
     protected $casts = [
         'birthday' => 'date',
         'is_special' => 'boolean',
+        'beyond_limit' => 'boolean',
         'is_priority' => 'boolean',
         'dilatation_sent_at' => 'datetime',
         'dilatation_started_at' => 'datetime',
