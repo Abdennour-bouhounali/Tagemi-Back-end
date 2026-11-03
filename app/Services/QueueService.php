@@ -156,12 +156,14 @@ class QueueService
     /**
      * "Entered" (دخل): the patients (one, or a family together) go in to the
      * doctor. They leave the queue; a doctor sees one patient or family at a time.
+     * $join: a relative who came late joins the doctor's visit in progress (same
+     * visit group, they pass together); with no visit in progress it is a new one.
      *
      * @return string the visit group shared by these patients
      */
-    public function enter(Collection $appointments, Doctor $doctor): string
+    public function enter(Collection $appointments, Doctor $doctor, bool $join = false): string
     {
-        return DB::transaction(function () use ($appointments, $doctor) {
+        return DB::transaction(function () use ($appointments, $doctor, $join) {
             $eventSpecialtyIds = $appointments->pluck('event_specialty_id')->unique();
             if ($eventSpecialtyIds->count() !== 1) {
                 throw new RuleException('الزوار المختارون ليسوا في نفس التخصص', 422);
@@ -191,11 +193,21 @@ class QueueService
             if (!$arrived) {
                 throw new RuleException("الطبيب {$doctor->full_name} لم يُسجَّل وصوله اليوم", 422);
             }
-            if ($this->doctorBusy($doctor->id)) {
+            $current = self::scopeToday(Appointment::query())
+                ->where('doctor_id', $doctor->id)->where('status', 'Entered')
+                ->lockForUpdate()->first();
+            if ($current && !$join) {
                 throw new RuleException("الطبيب {$doctor->full_name} مشغول مع زائر آخر، اضغط إجتاز أولاً", 409);
             }
+            if ($current && (int) $current->event_specialty_id !== $eventSpecialtyId) {
+                throw new RuleException("الطبيب {$doctor->full_name} مع زائر في تخصص آخر", 422);
+            }
 
-            $group = (string) Str::uuid();
+            $group = $current?->visit_group ?: (string) Str::uuid();
+            if ($current && !$current->visit_group) {
+                $current->visit_group = $group;
+                $current->save();
+            }
             foreach ($appointments as $appointment) {
                 $appointment->doctor_id = $doctor->id;
                 $appointment->entered_at = now();
@@ -252,8 +264,10 @@ class QueueService
 
             $now = now();
             $next = collect();
+            // The visit lasts from the first one in (a relative may have joined late)
+            $start = $group->pluck('entered_at')->filter()->min();
             foreach ($group as $a) {
-                $seconds = $a->entered_at ? max(0, $a->entered_at->diffInSeconds($now, true)) : null;
+                $seconds = $start ? max(0, $start->diffInSeconds($now, true)) : null;
                 $a->completed_at = $now;
                 $a->visit_seconds = $seconds === null ? null : intdiv((int) $seconds, $group->count());
                 $this->leaveQueue($a, 'Completed');

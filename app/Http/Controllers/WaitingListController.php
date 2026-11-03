@@ -40,6 +40,8 @@ class WaitingListController extends Controller
             'ids' => 'required|array|min:1|max:10',
             'ids.*' => 'integer|distinct',
             'doctor_id' => 'required|integer|exists:doctors,id',
+            // A late relative joins the visit in progress with this doctor
+            'join' => 'sometimes|boolean',
         ]);
 
         $appointments = Appointment::whereIn('id', $data['ids'])->get();
@@ -50,13 +52,17 @@ class WaitingListController extends Controller
         }
 
         $doctor = Doctor::findOrFail($data['doctor_id']);
-        $group = $this->queues->enter($appointments, $doctor);
+        $join = (bool) ($data['join'] ?? false);
+        $joined = $join && $this->queues->doctorBusy($doctor->id);
+        $group = $this->queues->enter($appointments, $doctor, $join);
         foreach ($appointments as $appointment) {
-            $this->audit('entered', $appointment, ['doctor_id' => $doctor->id, 'visit_group' => $group]);
+            $this->audit($joined ? 'joined_visit' : 'entered', $appointment, ['doctor_id' => $doctor->id, 'visit_group' => $group]);
         }
 
+        $who = $appointments->count() > 1 ? $appointments->count() . ' زوار' : 'الزائر';
+
         return response()->json([
-            'message' => ($appointments->count() > 1 ? 'دخل ' . $appointments->count() . ' زوار' : 'دخل الزائر')
+            'message' => ($joined ? "أُضيف {$who} إلى الزيارة الجارية" : ($appointments->count() > 1 ? "دخل {$who}" : 'دخل الزائر'))
                 . ' عند الطبيب ' . $doctor->full_name,
             'visit_group' => $group,
         ]);
@@ -412,7 +418,10 @@ class WaitingListController extends Controller
                     ->get(['status', 'patient_id'])
             );
 
-            $appointments = QueueService::scopeToday(Appointment::with(['day', 'hour', 'eventSpecialty.specialty']))
+            // Polled by every officer: only the nested columns the screen reads
+            $appointments = QueueService::scopeToday(Appointment::with([
+                'day:id,day_date', 'hour:id,time', 'eventSpecialty:id,specialty_id', 'eventSpecialty.specialty:id,name',
+            ]))
                 ->where('event_specialty_id', $eventSpecialty->id)
                 ->whereIn('status', QueueService::ACTIVE_STATUSES)
                 ->orderByRaw("status IN ('DilatationSent', 'Dilatation')")
@@ -462,6 +471,9 @@ class WaitingListController extends Controller
                 'appointments.is_priority', 'specialties.id as specialty_id')
             ->get();
 
+        // Whole queue length per specialty (the screen lists only the first 10)
+        $counts = $rows->countBy('specialty_id');
+
         $grouped = [];
         foreach ($rows as $row) {
             if (count($grouped[$row->specialty_id] ?? []) >= 10) {
@@ -508,6 +520,7 @@ class WaitingListController extends Controller
             'data' => $grouped,
             'calling' => $calling,
             'closed_specialties' => $closed,
+            'counts' => $counts,
             'event' => ['id' => $event->id, 'name' => $event->name],
             'timestamp' => now()->toIso8601String(),
             'total_patients' => $rows->count(),

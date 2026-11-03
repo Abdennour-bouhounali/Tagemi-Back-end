@@ -791,6 +791,44 @@ class EventDaySimulationTest extends TestCase
         }
     }
 
+    /** A relative who comes late joins the visit in progress; they pass together, time split from the start. */
+    public function test_late_relative_joins_the_visit_in_progress(): void
+    {
+        $skin = $this->esNamed('Skin');
+        $doctor = $this->doctors[$skin][0];
+        $this->arrive($doctor, $skin);
+        $mother = $this->patient([[$skin, 'today']], 'Mother', '0770555111');
+        $child = $this->patient([[$skin, 'today']], 'Child', '0770555111');
+        $other = $this->patient([[$skin, 'today']]);
+        foreach ([$mother, $other] as $p) {
+            $this->checkIn($p['patient_id']);
+        }
+        $this->as('officer', 'POST', '/api/waitinglist/enter', ['ids' => $mother['ids'], 'doctor_id' => $doctor->id])->assertOk();
+
+        // The child arrives 6 minutes later
+        $this->travel(6)->minutes();
+        $this->checkIn($child['patient_id'])->assertOk();
+        $this->as('officer', 'POST', '/api/waitinglist/enter', ['ids' => $child['ids'], 'doctor_id' => $doctor->id])->assertStatus(409);
+        $this->as('officer', 'POST', '/api/waitinglist/enter', ['ids' => $child['ids'], 'doctor_id' => $doctor->id, 'join' => true])
+            ->assertOk()->assertJsonPath('message', fn ($m) => str_contains($m, 'الزيارة الجارية'));
+        $this->assertSame(
+            Appointment::find($mother['ids'][0])->visit_group,
+            Appointment::find($child['ids'][0])->visit_group,
+        );
+        $this->assertInvariants('after late join');
+
+        $this->travel(4)->minutes();
+        $this->as('officer', 'POST', "/api/waitinglist/Complete/{$mother['ids'][0]}")->assertOk();
+        // 10 minutes from the first one in, split between the two
+        $this->assertSame(300, Appointment::find($mother['ids'][0])->visit_seconds);
+        $this->assertSame(300, Appointment::find($child['ids'][0])->visit_seconds);
+        $this->assertSame('Completed', Appointment::find($child['ids'][0])->status);
+
+        // No visit in progress: «join» simply starts a new one
+        $this->as('officer', 'POST', '/api/waitinglist/enter', ['ids' => $other['ids'], 'doctor_id' => $doctor->id, 'join' => true])->assertOk();
+        $this->assertSame('Entered', Appointment::find($other['ids'][0])->status);
+    }
+
     /** A real double click is still processed once. */
     public function test_double_click_is_still_processed_once(): void
     {

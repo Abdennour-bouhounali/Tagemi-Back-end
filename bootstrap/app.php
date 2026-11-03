@@ -19,6 +19,10 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
         // API only: there is no login page to redirect guests to
         $middleware->redirectGuestsTo(fn () => null);
+        // First in the group, so it compresses the final answer (large JSON only)
+        $middleware->api(prepend: [
+            \App\Http\Middleware\CompressJsonResponse::class,
+        ]);
         $middleware->api(append: [
             // Double clicks / slow-network retries are processed once
             \App\Http\Middleware\PreventDuplicateRequests::class,

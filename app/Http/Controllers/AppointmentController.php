@@ -218,24 +218,24 @@ public function getByEvent(Request $request)
             'specialty_id' => 'nullable|exists:specialties,id'
         ]);
         
-        $query = Appointment::whereHas('eventSpecialty', function($q) use ($validated) {
-            $q->where('event_id', $validated['event_id']);
-            
-            if (isset($validated['specialty_id'])) {
-                $q->where('specialty_id', $validated['specialty_id']);
-            }
-        });
+        // appointments.event_id is indexed (same event as the appointment's specialty)
+        $query = Appointment::where('event_id', $validated['event_id']);
+        if (isset($validated['specialty_id'])) {
+            $query->whereHas('eventSpecialty', fn ($q) => $q->where('specialty_id', $validated['specialty_id']));
+        }
         
         if (isset($validated['status'])) {
             $query->where('status', $validated['status']);
         }
         
+        // Only what the presence desk and the statistics read: one row per
+        // appointment of the whole event, so every nested column counts
+        // (the full event and the doctor per row tripled the answer)
         $appointments = $query->with([
-                'eventSpecialty.specialty',
-                'eventSpecialty.event',
-                'day',
-                'hour',
-                'doctor'
+                'eventSpecialty:id,event_id,specialty_id,has_dilatation,opened_on',
+                'eventSpecialty.specialty:id,name',
+                'day:id,day_date',
+                'hour:id,time',
             ])
             ->orderBy('day_id', 'asc')
             ->orderBy('hour_id', 'asc')
