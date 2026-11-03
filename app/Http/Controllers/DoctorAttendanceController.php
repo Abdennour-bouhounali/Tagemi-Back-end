@@ -28,12 +28,24 @@ class DoctorAttendanceController extends Controller
     {
     }
 
-    /** Doctors scheduled today in each specialty of the event, with their attendance. */
+    /**
+     * Doctors scheduled today in each specialty of the event, with their
+     * attendance. Before the visit day (no day today) the doctors of the next
+     * visit day are listed for checking (is_today false: no arrival yet).
+     */
     public function today($eventId)
     {
+        $eventDays = fn () => Day::whereHas('eventSpecialty', fn ($q) => $q->where('event_id', $eventId));
+        $today = QueueService::today();
+        $date = $eventDays()->whereDate('day_date', $today)->exists()
+            ? $today
+            : ($eventDays()->whereDate('day_date', '>', $today)->min('day_date')
+                ?? $eventDays()->max('day_date'));
+        $date = $date ? substr((string) $date, 0, 10) : $today;
+
         $days = Day::with('intervals.doctor')
             ->whereHas('eventSpecialty', fn ($q) => $q->where('event_id', $eventId))
-            ->whereDate('day_date', QueueService::today())
+            ->whereDate('day_date', $date)
             ->get();
 
         $attendance = DoctorAttendance::whereIn('day_id', $days->pluck('id'))->get()
@@ -56,7 +68,7 @@ class DoctorAttendanceController extends Controller
             })->values(),
         ])->values();
 
-        return ['specialties' => $specialties];
+        return ['date' => $date, 'is_today' => $date === $today, 'specialties' => $specialties];
     }
 
     /**

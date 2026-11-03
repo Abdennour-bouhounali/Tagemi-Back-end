@@ -829,6 +829,25 @@ class EventDaySimulationTest extends TestCase
         $this->assertSame('Entered', Appointment::find($other['ids'][0])->status);
     }
 
+    /** Before the visit day the doctors page lists the next visit day's doctors (nothing to record yet). */
+    public function test_doctors_page_shows_the_next_visit_day_before_the_event(): void
+    {
+        $eventId = DB::table('events')->insertGetId(['name' => 'Later', 'date' => Carbon::now(QueueService::TIMEZONE)->addDays(3)->toDateString(), 'is_active' => 1, 'is_archived' => 0, 'nbr_of_allowed_specialties' => 1]);
+        $specialtyId = DB::table('specialties')->insertGetId(['name' => 'Later' . uniqid()]);
+        $esId = DB::table('event_specialties')->insertGetId(['event_id' => $eventId, 'specialty_id' => $specialtyId]);
+        $visitDay = Carbon::now(QueueService::TIMEZONE)->addDays(3)->toDateString();
+        $dayId = DB::table('days')->insertGetId(['event_specialty_id' => $esId, 'day_date' => $visitDay]);
+        $doctor = Doctor::create(['first_name' => 'Later', 'family_name' => 'Dr', 'specialty_id' => $specialtyId, 'wilaya_code' => '16', 'sector' => 'public', 'is_active' => true, 'sex' => 'male']);
+        DB::table('doctor_intervals')->insert(['day_id' => $dayId, 'doctor_id' => $doctor->id, 'start_time' => '08:00:00', 'end_time' => '12:00:00', 'visit_minutes' => 15, 'visits_count' => 16, 'extra_visits' => 0]);
+
+        $res = $this->as('super', 'GET', "/api/events/{$eventId}/doctors-today")->assertOk()
+            ->assertJsonPath('date', $visitDay)->assertJsonPath('is_today', false);
+        $this->assertSame([$doctor->id], array_column($res->json('specialties.0.doctors'), 'doctor_id'));
+
+        // On a visit day it is today's doctors, as before
+        $this->as('super', 'GET', "/api/events/{$this->eventId}/doctors-today")->assertOk()->assertJsonPath('is_today', true);
+    }
+
     /** A real double click is still processed once. */
     public function test_double_click_is_still_processed_once(): void
     {
