@@ -38,7 +38,7 @@ class PublicTurnController extends Controller
         if ($appointments->isEmpty()) {
             return response()->json([
                 'message' => !empty($data['patient_id'])
-                    ? 'لم نجد مريضاً بهذا الرقم في هذه الحملة. تأكد من رقم المريض.'
+                    ? 'لم نجد زائراً بهذا الرقم في هذه الحملة. تأكد من رقم الزائر.'
                     : 'لم نجد موعداً بهذا الرقم في هذه الحملة. تأكد من رقم الهاتف الذي حجزت به.',
             ], 404);
         }

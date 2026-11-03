@@ -7,6 +7,8 @@ use App\Http\Controllers\RoleController;
 use App\Http\Controllers\RuleController;
 use App\Http\Controllers\DoctorController;
 use App\Http\Controllers\DoctorAttendanceController;
+use App\Http\Controllers\PatientMergeController;
+use App\Http\Controllers\AdminActionController;
 use App\Http\Controllers\UsefulController;
 use App\Http\Controllers\SpecialtyController;
 use App\Http\Controllers\AppointmentController;
@@ -59,7 +61,7 @@ Route::get('/public/events/{id}', [EventController::class, 'publicShow'])->where
 Route::get('/public/events/{id}/specialties', [EventController::class, 'getSpecialties'])->whereNumber('id');
 Route::get('/public/waitinglist', [WaitingListController::class, 'getPublicWaitingList']);
 // "See my turn" page (public QR poster): patient number + phone number
-Route::post('/public/my-turn', [PublicTurnController::class, 'show'])->middleware('throttle:public-forms');
+Route::post('/public/my-turn', [PublicTurnController::class, 'show'])->middleware('throttle:my-turn');
 // Right of access: a patient reads all the data kept about them
 Route::post('/public/my-data', [PatientDataController::class, 'show'])->middleware('throttle:my-data');
 
@@ -124,7 +126,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // --------------------------------------------
     // Event staff (scoped to their own event)
     // --------------------------------------------
-    Route::middleware('role:super_admin,special_admin,check_admin,recipient_admin,doctor,patient_manager')->group(function () {
+    Route::middleware('role:super_admin,special_admin,check_admin,recipient_admin,doctor,patient_manager,organizer')->group(function () {
         // Event list is filtered to the user's own event in the controller
         Route::get('/events', [EventController::class, 'index']);
         Route::get('/getEvents', [EventController::class, 'index']);
@@ -134,13 +136,17 @@ Route::middleware('auth:sanctum')->group(function () {
             ->whereNumber('id')->middleware('event.access:event,id');
         Route::get('/appointment/patient-appointments/{patientId}/{eventId}', [AppointmentController::class, 'getPatientAppointments'])
             ->middleware('event.access:event,eventId');
+        // A patient's history: status changes and manual changes, who and when
+        Route::get('/events/{eventId}/patients/{patientId}/log', [AppointmentController::class, 'patientLog'])
+            ->whereNumber(['eventId', 'patientId'])->middleware('event.access:event,eventId');
         // Staff screens poll this and reload only when something changed
         Route::get('/events/{eventId}/live-version', [AppointmentController::class, 'liveVersion'])
             ->middleware('event.access:event,eventId');
     });
 
-    // Reception (recipient admin) and special-cases admin: presence desk
-    Route::middleware('role:super_admin,special_admin,recipient_admin')->group(function () {
+    // Reception (recipient admin) and special-cases admin: presence desk.
+    // The organizer (viewer) is refused every write by the role middleware.
+    Route::middleware('role:super_admin,special_admin,recipient_admin,organizer')->group(function () {
         Route::get('/event-specialties/{id}/days', [EventController::class, 'getDays'])
             ->middleware('event.access:event_specialty,id');
         Route::get('/days/{id}/hours', [EventController::class, 'getHours'])
@@ -159,6 +165,13 @@ Route::middleware('auth:sanctum')->group(function () {
             ->middleware('event.access:appointment,id');
         Route::post('/events/{eventId}/check-in', [AppointmentController::class, 'checkInByNumber'])
             ->middleware('event.access:event,eventId');
+        // Same name + phone registered twice: propose and merge into one patient number
+        Route::get('/events/{eventId}/duplicates', [PatientMergeController::class, 'eventDuplicates'])
+            ->whereNumber('eventId')->middleware('event.access:event,eventId');
+        Route::get('/events/{eventId}/patients/{patientId}/duplicates', [PatientMergeController::class, 'duplicates'])
+            ->whereNumber(['eventId', 'patientId'])->middleware('event.access:event,eventId');
+        Route::post('/events/{eventId}/patients/{patientId}/merge', [PatientMergeController::class, 'merge'])
+            ->whereNumber(['eventId', 'patientId'])->middleware('event.access:event,eventId');
         Route::put('/appointments/{id}', [AppointmentController::class, 'update'])
             ->middleware('event.access:appointment,id');
         Route::patch('/appointments/{id}', [AppointmentController::class, 'update'])
@@ -189,6 +202,9 @@ Route::middleware('auth:sanctum')->group(function () {
             ->middleware('event.access:appointment,id');
         Route::post('waitinglist/Special/{id}', [WaitingListController::class, 'Special'])
             ->middleware('event.access:appointment,id');
+        // Place 3 of the queue, no special-case mark (logged: who, when)
+        Route::post('waitinglist/move-to-front/{id}', [WaitingListController::class, 'moveToFront'])
+            ->middleware('event.access:appointment,id');
         Route::post('/appointments/add-multiple', [AppointmentController::class, 'storeMultiple'])
             ->middleware('event.access:event,event_id');
         Route::post('/appointments/add-multiple-different', [AppointmentController::class, 'storeMultipleDifferent'])
@@ -196,11 +212,17 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     // Specialty queue (check admin), patient manager and doctors
-    Route::middleware('role:super_admin,check_admin,doctor,patient_manager')->group(function () {
+    Route::middleware('role:super_admin,check_admin,doctor,patient_manager,organizer')->group(function () {
         Route::get('/events/{eventId}/stations', [WaitingListController::class, 'stations'])
             ->middleware('event.access:event,eventId');
         Route::get('waitinglist/GetWaitingListBySpeciality/{eventId}/{specialityId}', [WaitingListController::class, 'GetWaitingListBySpeciality'])
             ->middleware('event.access:event,eventId');
+        // Doctors of the specialty today, with who is with a patient now
+        Route::get('/event-specialties/{id}/doctors-present', [WaitingListController::class, 'doctorsPresent'])
+            ->whereNumber('id')->middleware('event.access:event_specialty,id');
+        // Dilatation room: run by the officer; doctors, patient manager and organizer look only
+        Route::get('/event-specialties/{id}/dilatation-room', [WaitingListController::class, 'dilatationRoom'])
+            ->middleware('event.access:event_specialty,id');
     });
     Route::middleware('role:super_admin,check_admin,doctor')->group(function () {
         Route::post('/appointment/addComment', [AppointmentController::class, 'addComment'])
@@ -212,7 +234,13 @@ Route::middleware('auth:sanctum')->group(function () {
             ->middleware('event.access:appointment,id');
         Route::post('/waitinglist/push-down', [WaitingListController::class, 'pushDownMany']); // event checked per appointment
     });
-    Route::middleware('role:super_admin,check_admin')->group(function () {
+    Route::middleware('role:super_admin,check_admin,organizer')->group(function () {
+        // دخل (with the chosen doctor; a family enters together), then إجتاز
+        Route::post('/waitinglist/enter', [WaitingListController::class, 'enter']); // event checked per appointment
+        Route::post('waitinglist/cancel-enter/{id}', [WaitingListController::class, 'cancelEnter'])
+            ->middleware('event.access:appointment,id');
+        Route::get('waitinglist/relatives/{id}', [WaitingListController::class, 'relatives'])
+            ->middleware('event.access:appointment,id');
         Route::post('waitinglist/Complete/{id}', [WaitingListController::class, 'Completed'])
             ->middleware('event.access:appointment,id');
         Route::post('waitinglist/Dilatation/{id}', [WaitingListController::class, 'Dilatation'])
@@ -222,19 +250,37 @@ Route::middleware('auth:sanctum')->group(function () {
         // Dilatation room (hidden station of a specialty, run by a specialty officer)
         Route::post('waitinglist/DilatationArrived/{id}', [WaitingListController::class, 'DilatationArrived'])
             ->middleware('event.access:appointment,id');
-        Route::get('/event-specialties/{id}/dilatation-room', [WaitingListController::class, 'dilatationRoom'])
-            ->middleware('event.access:event_specialty,id');
         Route::get('/appointments/{id}/referral-options', [WaitingListController::class, 'referralOptions'])
             ->middleware('event.access:appointment,id');
         Route::post('/appointments/{id}/refer', [WaitingListController::class, 'refer'])
             ->middleware('event.access:appointment,id');
     });
+    // Visit day dashboards: super admin and the organizer (viewer) of the event
+    Route::middleware('role:super_admin,organizer')->group(function () {
+        Route::get('/events/{id}/doctors-today', [DoctorAttendanceController::class, 'today'])
+            ->whereNumber('id')->middleware('event.access:event,id');
+        Route::get('/events/{id}/appointment-distribution', [EventController::class, 'getAppointmentDistribution'])
+            ->whereNumber('id')->middleware('event.access:event,id');
+        Route::get('/events/{id}/doctor-visits', [WaitingListController::class, 'doctorVisits'])
+            ->whereNumber('id')->middleware('event.access:event,id');
+    });
+    // Super admin: change an appointment's time, add a specialty
+    Route::middleware('role:super_admin')->group(function () {
+        Route::patch('/appointments/{id}/reschedule', [AppointmentController::class, 'reschedule'])
+            ->whereNumber('id')->middleware('event.access:appointment,id');
+        Route::post('/appointments/{id}/add-specialty', [AppointmentController::class, 'addSpecialty'])
+            ->whereNumber('id')->middleware('event.access:appointment,id');
+        // Audit trail: every change and login of the staff, who and when
+        Route::get('/admin-actions', [AdminActionController::class, 'index']);
+    });
     // Visit day: open a specialty's queue when its doctor is there
     Route::middleware('role:super_admin')->group(function () {
         Route::patch('/event-specialties/{id}/toggle-open', [WaitingListController::class, 'toggleOpen'])
             ->middleware('event.access:event_specialty,id');
+        // Add registry doctors to today's day (not planned in the event form): they arrive and open the queue
+        Route::post('/event-specialties/{id}/doctors', [DoctorAttendanceController::class, 'add'])
+            ->whereNumber('id')->middleware('event.access:event_specialty,id');
         // Doctors' arrival (first one opens the queue) and departure (last one closes it)
-        Route::get('/events/{id}/doctors-today', [DoctorAttendanceController::class, 'today'])->whereNumber('id');
         Route::post('/event-specialties/{id}/doctors/{doctor}/arrive', [DoctorAttendanceController::class, 'arrive'])
             ->whereNumber(['id', 'doctor']);
         Route::post('/event-specialties/{id}/doctors/{doctor}/leave', [DoctorAttendanceController::class, 'leave'])
@@ -267,7 +313,6 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/events/{id}/statistics', [EventController::class, 'statistics'])->whereNumber('id');
         Route::get('/{id}/statistics', [EventController::class, 'statistics'])->whereNumber('id'); // legacy path used by Events.jsx
         Route::get('/events/{id}/with-stats', [EventController::class, 'showWithStats']);
-        Route::get('/events/{id}/appointment-distribution', [EventController::class, 'getAppointmentDistribution']);
 
         // Event specialties
         Route::post('/events/{eventId}/specialties', [EventController::class, 'addSpecialty']);

@@ -43,4 +43,10 @@ class Day extends Model
     {
         return $this->hasMany(DoctorInterval::class);
     }
+
+    /** Doctors' arrival / departure on this day. */
+    public function attendances()
+    {
+        return $this->hasMany(DoctorAttendance::class);
+    }
 }

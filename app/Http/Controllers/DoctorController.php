@@ -27,6 +27,7 @@ class DoctorController extends Controller
         ]);
 
         $doctors = Doctor::with(['specialty:id,name', 'user:id,email'])
+            ->where('is_simulation', false) // training event doctors stay out of the registry
             ->when(isset($filters['specialty_id']), fn ($q) => $q->where('specialty_id', $filters['specialty_id']))
             ->when(isset($filters['active']), fn ($q) => $q->where('is_active', (bool) $filters['active']))
             ->when(!empty($filters['q']), function ($q) use ($filters) {

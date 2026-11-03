@@ -282,7 +282,7 @@ class DeepStatistics
 
         $top = $ksarOrder[0];
         $topCount = $patients->where('ksar', $top)->count();
-        $out[] = "أكبر قصر تمثيلاً: {$top} بـ {$topCount} مريض ({$pc($topCount, $n)}%).";
+        $out[] = "أكبر قصر تمثيلاً: {$top} بـ {$topCount} زائر ({$pc($topCount, $n)}%).";
 
         $m = $patients->where('sex', 'ذكر')->count();
         $f = $n - $m;

@@ -16,6 +16,7 @@ class VisitStatistics
         'waiting' => ['Waiting'],                 // arrived, on hold for this specialty
         'in_queue' => ['Present', 'Commingsoon'], // in this specialty's queue
         'dilatation' => ['DilatationSent', 'Dilatation'], // sent to / in the dilatation room
+        'in_visit' => ['Entered'],                // with a doctor now
         'completed' => ['Completed'],
     ];
 

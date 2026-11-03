@@ -10,6 +10,7 @@ use App\Models\DoctorInterval;
 use App\Models\EventSpecialty;
 use App\Services\QueueService;
 use Carbon\CarbonInterface;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -18,6 +19,8 @@ use Illuminate\Support\Facades\Log;
  * Visit day (super admin): doctors' arrival and departure. The first doctor
  * of a specialty who arrives opens its queue; when the last one present
  * leaves, the queue closes (patients already in it are still served).
+ * «غادر» only changes where new patients are sent: it is allowed while the
+ * doctor is with a patient, who finishes that visit and the queue.
  */
 class DoctorAttendanceController extends Controller
 {
@@ -56,6 +59,85 @@ class DoctorAttendanceController extends Controller
         return ['specialties' => $specialties];
     }
 
+    /**
+     * Opening a specialty with doctors not planned in the event form (the
+     * training event, a replacement doctor): each one gets an interval today
+     * from now to end_time, then arrives like a planned doctor (opens the
+     * queue). Hours are not touched: patients already booked them.
+     */
+    public function add(Request $request, $eventSpecialtyId)
+    {
+        $data = $request->validate([
+            'doctor_ids' => 'required|array|min:1|max:20',
+            'doctor_ids.*' => 'integer|distinct|exists:doctors,id',
+            'end_time' => ['required', 'regex:/^\d{2}:\d{2}$/'],
+            'visit_minutes' => 'required|integer|min:5|max:120',
+        ]);
+
+        $eventSpecialty = EventSpecialty::findOrFail($eventSpecialtyId);
+        $day = Day::where('event_specialty_id', $eventSpecialty->id)
+            ->whereDate('day_date', QueueService::today())->first();
+        if (!$day) {
+            throw new RuleException('هذا التخصص غير مبرمج اليوم في الحدث', 422);
+        }
+
+        $now = now()->setTimezone(QueueService::TIMEZONE);
+        $start = intdiv($now->hour * 60 + $now->minute, 5) * 5;
+        [$h, $m] = array_map('intval', explode(':', $data['end_time']));
+        $end = $h * 60 + $m;
+        if ($end <= $start) {
+            throw new RuleException('وقت نهاية العمل يجب أن يكون بعد الآن', 422);
+        }
+
+        $doctors = Doctor::whereIn('id', $data['doctor_ids'])->get();
+        foreach ($doctors as $doctor) {
+            if (!$doctor->is_active) {
+                throw new RuleException("الطبيب {$doctor->full_name} غير مفعّل", 422);
+            }
+            $elsewhere = DoctorAttendance::where('doctor_id', $doctor->id)->where('day_id', '!=', $day->id)
+                ->whereNotNull('arrived_at')->whereNull('left_at')
+                ->whereHas('day', fn ($q) => $q->whereDate('day_date', QueueService::today()))
+                ->exists();
+            if ($elsewhere) {
+                throw new RuleException("الطبيب {$doctor->full_name} حاضر في تخصص آخر اليوم، سجّل مغادرته منه أولاً", 409);
+            }
+        }
+
+        DB::transaction(function () use ($doctors, $day, $start, $end, $data) {
+            foreach ($doctors as $doctor) {
+                if (!DoctorInterval::where('day_id', $day->id)->where('doctor_id', $doctor->id)->exists()) {
+                    DoctorInterval::create([
+                        'day_id' => $day->id,
+                        'doctor_id' => $doctor->id,
+                        'start_time' => sprintf('%02d:%02d:00', intdiv($start, 60), $start % 60),
+                        'end_time' => sprintf('%02d:%02d:00', intdiv($end, 60), $end % 60),
+                        'visit_minutes' => $data['visit_minutes'],
+                        'extra_visits' => 0,
+                        'visits_count' => intdiv($end - $start, $data['visit_minutes']),
+                    ]);
+                }
+                $attendance = $this->attendance($day, $doctor);
+                if (!$attendance->isPresent()) {
+                    $attendance->arrived_at ??= now();
+                    $attendance->left_at = null;
+                    $attendance->recorded_by = Auth::id();
+                    $attendance->save();
+                }
+            }
+        });
+
+        $names = $doctors->pluck('full_name')->join('، ');
+        $message = $doctors->count() > 1 ? "أُضيف الأطباء {$names} وسُجّل وصولهم" : "أُضيف الطبيب {$names} وسُجّل وصوله";
+        if (!$eventSpecialty->isOpenToday()) {
+            $result = $this->queues->openSpecialty($eventSpecialty);
+            $sent = $result['sent'] + $result['moved'];
+            $message .= '، وفُتح طابور التخصص' . ($sent > 0 ? "، أُرسل إليه {$sent} زائر" : '');
+            Log::info('Specialty opened with added doctors', ['event_specialty_id' => $eventSpecialty->id, 'doctor_ids' => $doctors->pluck('id'), 'by' => Auth::id()] + $result);
+        }
+
+        return response()->json(['message' => $message, 'is_open' => true]);
+    }
+
     public function arrive($eventSpecialtyId, Doctor $doctor)
     {
         $eventSpecialty = EventSpecialty::findOrFail($eventSpecialtyId);
@@ -77,7 +159,7 @@ class DoctorAttendanceController extends Controller
         if (!$eventSpecialty->isOpenToday()) {
             $result = $this->queues->openSpecialty($eventSpecialty);
             $sent = $result['sent'] + $result['moved'];
-            $message .= '، وفُتح طابور التخصص' . ($sent > 0 ? "، أُرسل إليه {$sent} مريض" : '');
+            $message .= '، وفُتح طابور التخصص' . ($sent > 0 ? "، أُرسل إليه {$sent} زائر" : '');
             Log::info('Specialty opened by doctor arrival', ['event_specialty_id' => $eventSpecialty->id, 'doctor_id' => $doctor->id, 'by' => Auth::id()] + $result);
         }
 

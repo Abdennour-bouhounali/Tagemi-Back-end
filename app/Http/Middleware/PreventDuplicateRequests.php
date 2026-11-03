@@ -12,7 +12,9 @@ use Symfony\Component\HttpFoundation\Response;
 
 /**
  * Double clicks and retries on a slow connection: the same POST request
- * (same person, path and content) is processed once. A copy that arrives
+ * (same person, path and content) within a few seconds is processed once.
+ * The window is short (3 s) so a deliberate repeat (push down twice, «دخل»
+ * again after a cancel) still happens. A copy that arrives
  * while the first one runs waits for it, then gets the same answer.
  * Toggles (PATCH) are never merged: open then close must both happen.
  *
@@ -25,7 +27,7 @@ class PreventDuplicateRequests
 
     public function handle(Request $request, Closure $next): Response
     {
-        $window = (int) config('app.duplicate_request_window', 10);
+        $window = (int) config('app.duplicate_request_window', 3);
         $idempotencyKey = substr((string) $request->header('Idempotency-Key'), 0, 100);
 
         // By content only POST (creations, queue actions): a PATCH toggle sent
@@ -53,8 +55,9 @@ class PreventDuplicateRequests
 
                 $response = $next($request);
 
-                // Only JSON answers are replayed, and never a server error (the retry may succeed)
-                if ($response instanceof JsonResponse && $response->getStatusCode() < 500) {
+                // Only successful JSON answers are replayed: a refused request
+                // (422 / 409) may succeed once its cause is fixed
+                if ($response instanceof JsonResponse && $response->isSuccessful()) {
                     Cache::put($key, ['status' => $response->getStatusCode(), 'content' => $response->getContent()], $ttl);
                 }
 

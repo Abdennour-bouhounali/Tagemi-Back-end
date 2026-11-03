@@ -112,4 +112,49 @@ class DoctorAttendanceTest extends TestCase
         $this->assertNotNull($history->json('days.0.arrived_at'));
         $this->assertNotNull($history->json('days.0.left_at'));
     }
+
+    public function test_opening_adds_a_doctor_not_planned_in_the_event(): void
+    {
+        $drC = $this->doctor('ج');
+        $url = "/api/event-specialties/{$this->esId}/doctors";
+
+        $this->postJson($url, ['doctor_ids' => [$drC->id], 'end_time' => '00:00', 'visit_minutes' => 20])->assertStatus(422);
+        $this->postJson($url, ['doctor_ids' => [$drC->id], 'end_time' => '23:59', 'visit_minutes' => 20])->assertOk();
+
+        $this->assertTrue($this->isOpen());
+        $c = collect($this->getJson("/api/events/{$this->eventId}/doctors-today")->json('specialties.0.doctors'))
+            ->firstWhere('doctor_id', $drC->id);
+        $this->assertTrue($c['present']);
+        $this->assertStringEndsWith('23:59', $c['intervals'][0]);
+
+        // A planned doctor in the list just arrives (no second interval); twice is harmless
+        $this->postJson($url, ['doctor_ids' => [$drA = $this->drA->id, $drC->id], 'end_time' => '23:59', 'visit_minutes' => 20])->assertOk();
+        $this->assertSame(1, DB::table('doctor_intervals')->where('doctor_id', $drA)->count());
+        $this->assertSame(1, DB::table('doctor_intervals')->where('doctor_id', $drC->id)->count());
+
+        // Booking hours are not changed by a doctor added on the day
+        $this->assertSame(0, DB::table('hours')->join('days', 'days.id', '=', 'hours.day_id')
+            ->where('days.event_specialty_id', $this->esId)->where('hours.time', '>=', '13:00:00')->count());
+    }
+
+    public function test_training_event_specialty_opens_with_added_doctor_who_can_see_patients(): void
+    {
+        foreach (\App\Models\Event::where('is_simulation', true)->get() as $existing) {
+            app(\App\Services\TrainingEventService::class)->delete($existing);
+        }
+        while (DB::table('specialties')->count() < 8) {
+            DB::table('specialties')->insert(['name' => 'T' . uniqid()]);
+        }
+        $event = app(\App\Services\TrainingEventService::class)->start();
+        $es = EventSpecialty::where('event_id', $event->id)->orderBy('id')->first();
+        $doctor = $this->doctor('د');
+
+        $this->postJson("/api/event-specialties/{$es->id}/doctors", ['doctor_ids' => [$doctor->id], 'end_time' => '23:59', 'visit_minutes' => 15])->assertOk();
+        $this->assertTrue($es->fresh()->isOpenToday());
+
+        // The added doctor is present; the training event's own doctors have not arrived yet
+        $present = collect($this->getJson("/api/event-specialties/{$es->id}/doctors-present")->assertOk()->json('doctors'));
+        $this->assertSame([$doctor->id], $present->where('present', true)->pluck('doctor_id')->all());
+        $this->assertCount(count(\App\Services\TrainingEventService::DOCTORS[0]) + 1, $present);
+    }
 }

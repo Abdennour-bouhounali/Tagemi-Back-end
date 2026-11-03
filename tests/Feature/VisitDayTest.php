@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\Appointment;
+use App\Models\Doctor;
 use App\Models\User;
 use App\Services\QueueService;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
@@ -29,7 +30,7 @@ class VisitDayTest extends TestCase
     {
         parent::setUp();
 
-        foreach ([1 => 'SuperAdmin', 2 => 'SimpleUser', 3 => 'SpecialAdmin', 4 => 'CheckAdmin', 5 => 'RecipientAdmin', 6 => 'Doctor', 7 => 'ContentAdmin', 8 => 'PatientManager'] as $id => $name) {
+        foreach ([1 => 'SuperAdmin', 2 => 'SimpleUser', 3 => 'SpecialAdmin', 4 => 'CheckAdmin', 5 => 'RecipientAdmin', 6 => 'Doctor', 7 => 'ContentAdmin', 8 => 'PatientManager', 9 => 'Organizer'] as $id => $name) {
             DB::table('roles')->updateOrInsert(['id' => $id], ['name' => $name]);
         }
 
@@ -103,9 +104,47 @@ class VisitDayTest extends TestCase
         DB::table('event_specialties')->whereIn('id', $esIds)->update(['opened_on' => null]);
     }
 
+    /** Open/close a queue; opening needs a present doctor, so one is there. */
     private function toggle(int $esId)
     {
+        $this->markArrived($this->doctorFor($esId, 'T'), $esId);
+
         return $this->patchJson("/api/event-specialties/{$esId}/toggle-open")->assertOk();
+    }
+
+    /** Arrival recorded directly (no queue opening), unless already recorded. */
+    private function markArrived(Doctor $doctor, int $esId): void
+    {
+        $dayId = $this->es[$esId]['today'][0];
+        if (!DB::table('doctor_attendances')->where('day_id', $dayId)->where('doctor_id', $doctor->id)->exists()) {
+            DB::table('doctor_attendances')->insert(['day_id' => $dayId, 'doctor_id' => $doctor->id, 'arrived_at' => now(), 'created_at' => now(), 'updated_at' => now()]);
+        }
+    }
+
+    /** دخل with a doctor of the specialty (scheduled today), then إجتاز. */
+    private function pass(int $appointmentId)
+    {
+        $appointment = Appointment::find($appointmentId);
+        $doctor = $this->doctorFor($appointment->event_specialty_id);
+        $this->markArrived($doctor, $appointment->event_specialty_id);
+        $this->postJson('/api/waitinglist/enter', ['ids' => [$appointmentId], 'doctor_id' => $doctor->id])->assertOk();
+
+        return $this->postJson("/api/waitinglist/Complete/{$appointmentId}");
+    }
+
+    /** A doctor scheduled today in the specialty (08:00-23:59, 20-minute visits). */
+    private function doctorFor(int $esId, string $name = 'A'): Doctor
+    {
+        $specialtyId = DB::table('event_specialties')->where('id', $esId)->value('specialty_id');
+        $doctor = Doctor::firstOrCreate(['first_name' => $name . $esId, 'family_name' => 'Dr', 'specialty_id' => $specialtyId], [
+            'phone' => '07' . random_int(10000000, 99999999), 'wilaya_code' => '16', 'sector' => 'public', 'is_active' => true, 'sex' => 'male',
+        ]);
+        DB::table('doctor_intervals')->updateOrInsert(
+            ['day_id' => $this->es[$esId]['today'][0], 'doctor_id' => $doctor->id],
+            ['start_time' => '00:00:00', 'end_time' => '23:59:00', 'visit_minutes' => 20, 'visits_count' => 70, 'extra_visits' => 0],
+        );
+
+        return $doctor;
     }
 
     /** Patient ids of a specialty queue, in order. */
@@ -246,12 +285,13 @@ class VisitDayTest extends TestCase
     public function test_passed_goes_to_least_busy_open_specialty(): void
     {
         [$a, $b, $c] = $this->esIds();
+        DB::table('events')->where('id', $this->eventId)->update(['nbr_of_allowed_specialties' => 4]);
         $this->checkIn($this->patient([[$b, 'today']])['patient_id']);
         $p = $this->patient([[$a, 'today'], [$b, 'today'], [$c, 'today'], [$this->esIds()[3], 'today']]);
         $this->checkIn($p['patient_id']); // a
         $this->close($this->esIds()[3]);
 
-        $this->postJson("/api/waitinglist/Complete/{$p['ids'][0]}")->assertOk();
+        $this->pass($p['ids'][0])->assertOk();
 
         // b has 1 waiting, c none, d closed: c
         $this->assertSame('Present', $this->statusOf($p['ids'][2]));
@@ -271,7 +311,7 @@ class VisitDayTest extends TestCase
 
         $this->assertSame([$before['patient_id']], $this->queue($a));
         $this->assertSame([$after['patient_id']], $this->queue($b));
-        $this->postJson("/api/waitinglist/Complete/{$before['ids'][0]}")->assertOk();
+        $this->pass($before['ids'][0])->assertOk();
 
         // Hall screen data: the open state is public
         $open = collect($this->getJson("/api/public/events/{$this->eventId}/specialties")->assertOk()->json('event_specialties'))
@@ -303,12 +343,12 @@ class VisitDayTest extends TestCase
         $p = $this->patient([[$a, 'today'], [$b, 'today']]);
         $this->checkIn($p['patient_id']);
 
-        $this->postJson("/api/waitinglist/Complete/{$p['ids'][0]}")->assertOk();
+        $this->pass($p['ids'][0])->assertOk();
 
         $this->assertSame('Completed', $this->statusOf($p['ids'][0]));
         $this->assertSame([$other['patient_id'], $p['patient_id']], $this->queue($b));
 
-        $this->postJson("/api/waitinglist/Complete/{$p['ids'][1]}")->assertOk()->assertJsonMissingPath('next_appointment');
+        $this->pass($p['ids'][1])->assertOk()->assertJsonMissingPath('next_appointment');
     }
 
     // --------------------------------------------------------- special case
@@ -329,7 +369,7 @@ class VisitDayTest extends TestCase
         // After Passed, the other specialty is not lost and keeps priority
         $other = $this->patient([[$a, 'today']]);
         $this->checkIn($other['patient_id']);
-        $this->postJson("/api/waitinglist/Complete/{$p['ids'][1]}")->assertOk();
+        $this->pass($p['ids'][1])->assertOk();
         $this->assertSame([$p['patient_id'], $other['patient_id']], $this->queue($a));
     }
 
@@ -358,6 +398,110 @@ class VisitDayTest extends TestCase
         $this->postJson("/api/waitinglist/Special/{$second['ids'][0]}")->assertOk();
 
         $this->assertSame([$first['patient_id'], $second['patient_id'], $normal['patient_id']], $this->queue($a));
+    }
+
+    // ------------------------------------------- manual changes (logged)
+
+    public function test_move_to_front_puts_patient_third_without_special_mark(): void
+    {
+        [$a, $b] = $this->esIds();
+        $first = $this->patient([[$a, 'today']]);
+        $this->checkIn($first['patient_id']);
+        $last = $this->patient([[$a, 'today']]);
+        $this->checkIn($last['patient_id']);
+        $special = $this->patient([[$a, 'today']]);
+        $this->postJson("/api/waitinglist/Special/{$special['ids'][0]}")->assertOk();
+        // Not checked in yet, and booked in two specialties
+        $p = $this->patient([[$b, 'today'], [$a, 'today']]);
+
+        Sanctum::actingAs($admin = $this->staff(User::ROLE_SPECIAL_ADMIN));
+        $this->postJson("/api/waitinglist/move-to-front/{$p['ids'][1]}")->assertOk();
+
+        $this->assertSame([$special['patient_id'], $first['patient_id'], $p['patient_id'], $last['patient_id']], $this->queue($a));
+        $moved = Appointment::find($p['ids'][1]);
+        $this->assertFalse($moved->is_special);
+        $this->assertFalse($moved->is_priority);
+        $this->assertNotNull($moved->checked_in_at);
+        $this->assertSame('Waiting', $this->statusOf($p['ids'][0]));
+        $this->assertDatabaseHas('appointment_logs', ['appointment_id' => $moved->id, 'action' => 'moved_to_front', 'user_id' => $admin->id]);
+
+        // Reception cannot do it
+        Sanctum::actingAs($this->staff(User::ROLE_RECIPIENT_ADMIN));
+        $this->postJson("/api/waitinglist/move-to-front/{$first['ids'][0]}")->assertForbidden();
+    }
+
+    public function test_super_admin_reschedules_and_counters_follow(): void
+    {
+        [$a] = $this->esIds();
+        $p = $this->patient([[$a, 'today']]);
+        [$todayDay, $todayHour] = $this->es[$a]['today'];
+        [$tomorrowDay, $tomorrowHour] = $this->es[$a]['tomorrow'];
+        DB::table('hours')->where('id', $todayHour)->update(['counter' => 1]);
+
+        $this->patchJson("/api/appointments/{$p['ids'][0]}/reschedule", ['day_id' => $tomorrowDay, 'hour_id' => $tomorrowHour])->assertOk();
+
+        $moved = Appointment::find($p['ids'][0]);
+        $this->assertSame($tomorrowHour, (int) $moved->hour_id);
+        $this->assertSame(0, DB::table('hours')->where('id', $todayHour)->value('counter'));
+        $this->assertSame(1, DB::table('hours')->where('id', $tomorrowHour)->value('counter'));
+        $this->assertDatabaseHas('appointment_logs', ['appointment_id' => $moved->id, 'action' => 'rescheduled', 'user_id' => auth()->id()]);
+
+        // An hour of another specialty is refused; a queued patient cannot be moved
+        [$b] = array_slice($this->esIds(), 1);
+        $this->patchJson("/api/appointments/{$p['ids'][0]}/reschedule", ['day_id' => $this->es[$b]['today'][0], 'hour_id' => $this->es[$b]['today'][1]])->assertStatus(422);
+        $q = $this->patient([[$a, 'today']]);
+        $this->checkIn($q['patient_id']);
+        $this->patchJson("/api/appointments/{$q['ids'][0]}/reschedule", ['day_id' => $tomorrowDay, 'hour_id' => $tomorrowHour])->assertStatus(422);
+
+        // Only the super admin
+        Sanctum::actingAs($this->staff(User::ROLE_SPECIAL_ADMIN));
+        $this->patchJson("/api/appointments/{$p['ids'][0]}/reschedule", ['day_id' => $todayDay, 'hour_id' => $todayHour])->assertForbidden();
+    }
+
+    public function test_add_specialty_up_to_event_limit_joins_today_on_hold(): void
+    {
+        [$a, $b, $c, $d] = $this->esIds();
+        $p = $this->patient([[$a, 'today']]);
+        $this->checkIn($p['patient_id']);
+
+        $res = $this->postJson("/api/appointments/{$p['ids'][0]}/add-specialty", [
+            'event_specialty_id' => $b, 'day_id' => $this->es[$b]['today'][0], 'hour_id' => $this->es[$b]['today'][1],
+        ])->assertCreated();
+        $added = Appointment::find($res->json('appointment.id'));
+        $this->assertSame($p['patient_id'], (int) $added->patient_id);
+        $this->assertSame('Waiting', $added->status); // already active in specialty a
+        $this->assertDatabaseHas('appointment_logs', ['appointment_id' => $added->id, 'action' => 'specialty_added']);
+
+        // Same specialty twice refused; limit (3) reached after a third one
+        $this->postJson("/api/appointments/{$p['ids'][0]}/add-specialty", [
+            'event_specialty_id' => $b, 'day_id' => $this->es[$b]['tomorrow'][0], 'hour_id' => $this->es[$b]['tomorrow'][1],
+        ])->assertStatus(422);
+        $this->postJson("/api/appointments/{$p['ids'][0]}/add-specialty", [
+            'event_specialty_id' => $c, 'day_id' => $this->es[$c]['tomorrow'][0], 'hour_id' => $this->es[$c]['tomorrow'][1],
+        ])->assertCreated();
+        $this->postJson("/api/appointments/{$p['ids'][0]}/add-specialty", [
+            'event_specialty_id' => $d, 'day_id' => $this->es[$d]['tomorrow'][0], 'hour_id' => $this->es[$d]['tomorrow'][1],
+        ])->assertStatus(422);
+    }
+
+    public function test_delete_closes_queue_gap_promotes_next_and_is_logged(): void
+    {
+        [$a, $b] = $this->esIds();
+        $p = $this->patient([[$a, 'today'], [$b, 'today']]);
+        $this->checkIn($p['patient_id']); // a Present, b Waiting
+        $other = $this->patient([[$a, 'today']]);
+        $this->checkIn($other['patient_id']);
+
+        $this->deleteJson("/api/appointments/{$p['ids'][0]}")->assertOk();
+
+        $this->assertSame([$other['patient_id']], $this->queue($a));
+        $this->assertSame(1, (int) Appointment::find($other['ids'][0])->orderList);
+        $this->assertSame('Present', $this->statusOf($p['ids'][1]));
+        $this->assertDatabaseHas('appointment_logs', ['appointment_id' => $p['ids'][0], 'action' => 'deleted', 'user_id' => auth()->id()]);
+
+        $log = $this->getJson("/api/events/{$this->eventId}/patients/{$p['patient_id']}/log")->assertOk();
+        $this->assertSame('deleted', $log->json('logs.0.action'));
+        $this->assertSame('staff', $log->json('logs.0.user'));
     }
 
     // ----------------------------------------------------------- push down
@@ -613,8 +757,308 @@ class VisitDayTest extends TestCase
 
         $stats = $this->getJson("/api/appointments/event-statistics/{$this->eventId}")->assertOk()->json('statistics');
 
-        $this->assertSame(['pending' => 1, 'waiting' => 1, 'in_queue' => 1, 'dilatation' => 0, 'completed' => 0, 'total' => 3,
+        $this->assertSame(['pending' => 1, 'waiting' => 1, 'in_queue' => 1, 'dilatation' => 0, 'in_visit' => 0, 'completed' => 0, 'total' => 3,
             'patients_total' => 2, 'patients_arrived' => 1, 'patients_finished' => 0], $stats);
         $this->assertSame($stats['total'], $this->getJson("/api/{$this->eventId}/statistics")->json('total_appointments'));
+    }
+
+    // ------------------------------------------- دخل (with the doctor), timing
+
+    private function enter(array $ids, Doctor $doctor)
+    {
+        $this->markArrived($doctor, Appointment::find($ids[0])->event_specialty_id);
+
+        return $this->postJson('/api/waitinglist/enter', ['ids' => $ids, 'doctor_id' => $doctor->id]);
+    }
+
+    private function arrive(int $esId, Doctor $doctor): void
+    {
+        $this->postJson("/api/event-specialties/{$esId}/doctors/{$doctor->id}/arrive")->assertOk();
+    }
+
+    public function test_enter_leaves_queue_and_locks_the_doctor(): void
+    {
+        [$a] = $this->esIds();
+        $p1 = $this->patient([[$a, 'today']]);
+        $p2 = $this->patient([[$a, 'today']], null, '0555000001');
+        $p3 = $this->patient([[$a, 'today']], null, '0555000002');
+        foreach ([$p1, $p2, $p3] as $p) {
+            $this->checkIn($p['patient_id']);
+        }
+        $drA = $this->doctorFor($a, 'A');
+        $drB = $this->doctorFor($a, 'B');
+
+        // إجتاز needs دخل first
+        $this->postJson("/api/waitinglist/Complete/{$p1['ids'][0]}")->assertStatus(422);
+
+        $this->enter([$p2['ids'][0]], $drA)->assertOk();
+        $this->assertSame('Entered', $this->statusOf($p2['ids'][0]));
+        $this->assertSame([$p1['patient_id'], $p3['patient_id']], $this->queue($a));
+        $this->assertSame($drA->id, Appointment::find($p2['ids'][0])->doctor_id);
+
+        // Busy doctor refused, another doctor of the same room accepted
+        $this->enter([$p1['ids'][0]], $drA)->assertStatus(409);
+        $this->enter([$p1['ids'][0]], $drB)->assertOk();
+
+        // Cancel: back to the head of the queue, doctor free again
+        $this->postJson("/api/waitinglist/cancel-enter/{$p2['ids'][0]}")->assertOk();
+        $this->assertSame([$p2['patient_id'], $p3['patient_id']], $this->queue($a));
+        $this->assertNull(Appointment::find($p2['ids'][0])->doctor_id);
+        $this->enter([$p3['ids'][0]], $drA)->assertOk();
+    }
+
+    public function test_entered_patient_is_not_sent_elsewhere_and_passes_on(): void
+    {
+        [$a, $b] = $this->esIds();
+        $p = $this->patient([[$a, 'today'], [$b, 'today']]);
+        $this->checkIn($p['patient_id']);
+        $this->enter([$p['ids'][0]], $this->doctorFor($a))->assertOk();
+
+        // Still one active specialty: the other one keeps waiting
+        $this->assertSame('Waiting', $this->statusOf($p['ids'][1]));
+
+        $this->postJson("/api/waitinglist/Complete/{$p['ids'][0]}")->assertOk();
+        $this->assertSame('Completed', $this->statusOf($p['ids'][0]));
+        $this->assertSame('Present', $this->statusOf($p['ids'][1]));
+    }
+
+    public function test_family_enters_and_passes_together_with_split_time(): void
+    {
+        [$a] = $this->esIds();
+        $family = [];
+        foreach (range(1, 3) as $i) {
+            $family[] = $this->patient([[$a, 'today']], null, '+213 555 77 88 99');
+            $this->checkIn(end($family)['patient_id']);
+        }
+        $ids = array_map(fn ($p) => $p['ids'][0], $family);
+        $doctor = $this->doctorFor($a);
+
+        Carbon::setTestNow(Carbon::now());
+        $this->enter($ids, $doctor)->assertOk();
+        Carbon::setTestNow(Carbon::now()->addMinutes(30));
+
+        $this->postJson("/api/waitinglist/Complete/{$ids[1]}")->assertOk();
+        Carbon::setTestNow();
+
+        foreach ($ids as $id) {
+            $row = Appointment::find($id);
+            $this->assertSame('Completed', $row->status);
+            $this->assertEqualsWithDelta(600, $row->visit_seconds, 2);
+        }
+    }
+
+    public function test_relatives_by_phone(): void
+    {
+        [$a, $b] = $this->esIds();
+        $p = $this->patient([[$a, 'today']], 'Father', '0555 44 33 22');
+        $queued = $this->patient([[$a, 'today']], 'Son', '+213555443322');
+        $notArrived = $this->patient([[$a, 'today']], 'Daughter', '0555443322');
+        $elsewhere = $this->patient([[$b, 'today']], 'Mother', '0555443322');
+        $stranger = $this->patient([[$a, 'today']], 'Other', '0555999999');
+        // The fixture gives everyone the same second phone
+        Appointment::where('event_id', $this->eventId)->update(['phone2' => '']);
+        foreach ([$p, $queued, $elsewhere, $stranger] as $x) {
+            $this->checkIn($x['patient_id']);
+        }
+
+        $relatives = collect($this->getJson("/api/waitinglist/relatives/{$p['ids'][0]}")->assertOk()->json('relatives'))->keyBy('patient_id');
+
+        $this->assertCount(3, $relatives);
+        $this->assertTrue($relatives[$queued['patient_id']]['can_enter']);
+        $this->assertSame(2, $relatives[$queued['patient_id']]['place']);
+        $this->assertSame('لم يصل بعد', $relatives[$notArrived['patient_id']]['reason']);
+        $this->assertFalse($relatives[$elsewhere['patient_id']]['can_enter']);
+    }
+
+    /** «غادر» only stops new patients being sent: allowed during a visit, which then ends normally. */
+    public function test_doctor_can_leave_with_a_patient_inside(): void
+    {
+        [$a] = $this->esIds();
+        $p = $this->patient([[$a, 'today']]);
+        $this->checkIn($p['patient_id']);
+        $doctor = $this->doctorFor($a);
+        $this->arrive($a, $doctor);
+        $this->enter([$p['ids'][0]], $doctor)->assertOk();
+
+        $this->postJson("/api/event-specialties/{$a}/doctors/{$doctor->id}/leave")->assertOk();
+        $this->postJson("/api/waitinglist/Complete/{$p['ids'][0]}")->assertOk();
+        $this->assertSame('Completed', $this->statusOf($p['ids'][0]));
+    }
+
+    public function test_doctor_visits_numbers_alarm_and_idle(): void
+    {
+        [$a] = $this->esIds();
+        $patients = [];
+        foreach (range(1, 3) as $i) {
+            $patients[] = $this->patient([[$a, 'today']], null, "055500010{$i}");
+            $this->checkIn(end($patients)['patient_id']);
+        }
+        $doctor = $this->doctorFor($a); // 20-minute visits: alarm after 30 min
+        $start = Carbon::now();
+        Carbon::setTestNow($start);
+        $this->arrive($a, $doctor);
+
+        $this->enter([$patients[0]['ids'][0]], $doctor)->assertOk();
+        Carbon::setTestNow($start->copy()->addMinutes(10));
+        $this->postJson("/api/waitinglist/Complete/{$patients[0]['ids'][0]}")->assertOk();
+
+        $this->enter([$patients[1]['ids'][0]], $doctor)->assertOk();
+        Carbon::setTestNow($start->copy()->addMinutes(75));
+
+        $row = collect($this->getJson("/api/events/{$this->eventId}/doctor-visits")->assertOk()->json('doctors'))
+            ->firstWhere('doctor_id', $doctor->id);
+        $this->assertSame(1, $row['treated']);
+        $this->assertEquals(10, $row['mean_minutes']);
+        $this->assertSame(20, $row['planned_minutes']);
+        $this->assertSame(1800, $row['current']['alarm_after_seconds']);
+        $this->assertTrue($row['current']['alarm']);
+
+        // Free for 15 minutes while a patient waits: idle
+        $this->postJson("/api/waitinglist/Complete/{$patients[1]['ids'][0]}")->assertOk();
+        Carbon::setTestNow($start->copy()->addMinutes(90));
+        $row = collect($this->getJson("/api/events/{$this->eventId}/doctor-visits")->json('doctors'))
+            ->firstWhere('doctor_id', $doctor->id);
+        $this->assertNull($row['current']);
+        $this->assertTrue($row['idle']);
+        Carbon::setTestNow();
+    }
+
+    public function test_hall_screen_calls_entered_patient_for_30_seconds(): void
+    {
+        [$a] = $this->esIds();
+        $p = $this->patient([[$a, 'today']]);
+        $this->checkIn($p['patient_id']);
+        Carbon::setTestNow(Carbon::now());
+        $this->enter([$p['ids'][0]], $this->doctorFor($a))->assertOk();
+
+        $calling = $this->getJson("/api/public/waitinglist?event_id={$this->eventId}")->assertOk()->json('calling');
+        $this->assertSame($p['patient_id'], collect($calling)->flatten(1)->first()['patient_id']);
+
+        Carbon::setTestNow(Carbon::now()->addSeconds(31));
+        $this->assertEmpty($this->getJson("/api/public/waitinglist?event_id={$this->eventId}")->json('calling'));
+        Carbon::setTestNow();
+    }
+
+    public function test_organizer_sees_everything_and_changes_nothing(): void
+    {
+        [$a] = $this->esIds();
+        $p = $this->patient([[$a, 'today']]);
+        $this->checkIn($p['patient_id']);
+        $doctor = $this->doctorFor($a);
+        $specialtyId = DB::table('event_specialties')->where('id', $a)->value('specialty_id');
+
+        Sanctum::actingAs($this->staff(User::ROLE_ORGANIZER));
+        $this->getJson("/api/events/{$this->eventId}/stations")->assertOk();
+        $this->getJson("/api/waitinglist/GetWaitingListBySpeciality/{$this->eventId}/{$specialtyId}")->assertOk();
+        $this->getJson("/api/event-specialties/{$a}/doctors-present")->assertOk()->assertJsonPath('doctors.0.doctor_id', $doctor->id);
+        $this->getJson("/api/events/{$this->eventId}/doctor-visits")->assertOk();
+        $this->getJson("/api/events/{$this->eventId}/doctors-today")->assertOk();
+        $this->getJson("/api/appointments/event-statistics/{$this->eventId}")->assertOk();
+
+        $this->enter([$p['ids'][0]], $doctor)->assertForbidden();
+        $this->postJson("/api/waitinglist/Commingsoon/{$p['ids'][0]}")->assertForbidden();
+        $this->postJson("/api/events/{$this->eventId}/check-in", ['patient_id' => 1])->assertForbidden();
+        $this->postJson("/api/event-specialties/{$a}/doctors/{$doctor->id}/arrive")->assertForbidden();
+        $this->patchJson("/api/event-specialties/{$a}/toggle-open")->assertForbidden();
+        $this->assertSame('Present', $this->statusOf($p['ids'][0]));
+
+        // Another event: refused
+        $other = DB::table('events')->insertGetId(['name' => 'Other', 'date' => QueueService::today(), 'is_active' => 1, 'is_archived' => 0, 'nbr_of_allowed_specialties' => 3]);
+        $this->getJson("/api/events/{$other}/doctor-visits")->assertForbidden();
+    }
+
+    // ------------------------------------------------- double registrations
+
+    public function test_double_registration_is_proposed_and_merged_into_one_patient(): void
+    {
+        [$a, $b, $c] = $this->esIds();
+        $main = $this->patient([[$a, 'today']], 'أحمد بن علي', '0555 12 34 56');
+        $twin = $this->patient([[$b, 'today']], 'احمد  بن علي', '+213555123456');
+        $this->patient([[$c, 'today']], 'محمد بن علي', '0555123456'); // same phone, other name
+        $this->patient([[$c, 'today']], 'أحمد بن علي', '0777000000');  // same name, other phone
+
+        Sanctum::actingAs($this->staff(User::ROLE_RECIPIENT_ADMIN));
+        $this->getJson("/api/events/{$this->eventId}/patients/{$main['patient_id']}/duplicates")
+            ->assertOk()->assertExactJson(['patient_ids' => [$twin['patient_id']]]);
+
+        $groups = $this->getJson("/api/events/{$this->eventId}/duplicates")->assertOk()->json('groups');
+        $this->assertCount(1, $groups);
+        $this->assertSame([$main['patient_id'], $twin['patient_id']], array_column($groups[0]['patients'], 'patient_id'));
+        $this->assertCount(1, $groups[0]['patients'][1]['specialties']);
+
+        $this->postJson("/api/events/{$this->eventId}/patients/{$main['patient_id']}/merge", ['patient_ids' => [$twin['patient_id'] + 1]])
+            ->assertStatus(422);
+        $this->postJson("/api/events/{$this->eventId}/patients/{$main['patient_id']}/merge", ['patient_ids' => [$twin['patient_id']]])
+            ->assertOk();
+
+        $this->assertSame($main['patient_id'], Appointment::find($twin['ids'][0])->patient_id);
+        $this->assertDatabaseHas('appointment_logs', ['appointment_id' => $twin['ids'][0], 'action' => 'merged']);
+        $this->assertSame([], $this->getJson("/api/events/{$this->eventId}/duplicates")->json('groups'));
+        $this->checkIn($main['patient_id'])->assertOk();
+        $this->assertSame(1, Appointment::whereIn('id', [$main['ids'][0], $twin['ids'][0]])->where('status', 'Waiting')->count());
+    }
+
+    public function test_check_in_refused_above_specialty_limit_until_extra_deleted(): void
+    {
+        [$a, $b, $c, $d] = $this->esIds();
+        $main = $this->patient([[$a, 'today'], [$b, 'today']], 'Sara K', '0555123456');
+        $twin = $this->patient([[$c, 'today'], [$d, 'today']], 'sara k', '0555123456');
+        $this->postJson("/api/events/{$this->eventId}/patients/{$main['patient_id']}/merge", ['patient_ids' => [$twin['patient_id']]])->assertOk();
+
+        $this->checkIn($main['patient_id'])->assertStatus(422);
+        $this->assertSame('Pending', $this->statusOf($main['ids'][0]));
+
+        $this->deleteJson("/api/appointments/{$twin['ids'][1]}")->assertOk();
+        $this->checkIn($main['patient_id'])->assertOk();
+    }
+
+    public function test_check_in_refused_with_same_specialty_twice(): void
+    {
+        [$a] = $this->esIds();
+        $main = $this->patient([[$a, 'today']], 'Ali B', '0555123456');
+        // Same person typed with another birthday: the booking guard could not catch it
+        $twin = $this->patient([[$a, 'tomorrow']], 'Ali X', '0555123456');
+        Appointment::find($twin['ids'][0])->update(['full_name' => 'Ali B', 'birthday' => '1981-02-02']);
+        $this->postJson("/api/events/{$this->eventId}/patients/{$main['patient_id']}/merge", ['patient_ids' => [$twin['patient_id']]])->assertOk();
+
+        $this->checkIn($main['patient_id'])->assertStatus(422);
+    }
+
+    public function test_merge_refused_once_the_other_registration_checked_in(): void
+    {
+        [$a, $b] = $this->esIds();
+        $main = $this->patient([[$a, 'today']], 'Ali B', '0555123456');
+        $twin = $this->patient([[$b, 'today']], 'Ali B', '0555123456');
+        $this->checkIn($twin['patient_id'])->assertOk();
+
+        $this->postJson("/api/events/{$this->eventId}/patients/{$main['patient_id']}/merge", ['patient_ids' => [$twin['patient_id']]])
+            ->assertStatus(409);
+    }
+
+    public function test_patient_history_lists_status_changes_for_event_staff(): void
+    {
+        [$a, $b] = $this->esIds();
+        $p = $this->patient([[$a, 'today'], [$b, 'today']]);
+        $desk = $this->staff(User::ROLE_RECIPIENT_ADMIN);
+        Sanctum::actingAs($desk);
+        $this->checkIn($p['patient_id'])->assertOk();
+
+        Sanctum::actingAs($this->staff(User::ROLE_SUPER_ADMIN));
+        $this->pass($p['ids'][0])->assertOk();
+
+        Sanctum::actingAs($this->staff(User::ROLE_CHECK_ADMIN));
+        $logs = collect($this->getJson("/api/events/{$this->eventId}/patients/{$p['patient_id']}/log")->assertOk()->json('logs'))
+            ->where('action', 'status_changed')->sortBy('id')->values();
+
+        $first = $logs->firstWhere('appointment_id', $p['ids'][0]);
+        $this->assertSame(['Pending', 'Present'], [$first['details']['from'], $first['details']['to']]);
+        $this->assertSame('سجّل حضور زائر', $first['details']['via']);
+        $this->assertSame('staff', $first['user']);
+        $this->assertContains('Entered', $logs->pluck('details.to'));
+        $this->assertContains('Completed', $logs->pluck('details.to'));
+
+        // Patients never read it
+        Sanctum::actingAs($this->staff(User::ROLE_SIMPLE_USER));
+        $this->getJson("/api/events/{$this->eventId}/patients/{$p['patient_id']}/log")->assertForbidden();
     }
 }

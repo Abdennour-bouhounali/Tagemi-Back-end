@@ -22,6 +22,7 @@ class PatientDataController extends Controller
         'waiting' => 'حضر، في الانتظار',
         'in_queue' => 'في الطابور',
         'dilatation' => 'في التمدد',
+        'in_visit' => 'عند الطبيب',
         'completed' => 'أنهى الفحص',
     ];
 
@@ -41,7 +42,7 @@ class PatientDataController extends Controller
 
         if (!$match) {
             return response()->json([
-                'message' => 'لم نجد بيانات توافق هذه المعلومات. تأكد من رقم المريض ورقم الهاتف وتاريخ الميلاد كما كتبتها عند الحجز.',
+                'message' => 'لم نجد بيانات توافق هذه المعلومات. تأكد من رقم الزائر ورقم الهاتف وتاريخ الميلاد كما كتبتها عند الحجز.',
             ], 404);
         }
 

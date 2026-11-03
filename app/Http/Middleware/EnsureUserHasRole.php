@@ -12,6 +12,7 @@ use Symfony\Component\HttpFoundation\Response;
  *
  * Usage: ->middleware('role:super_admin,recipient_admin')
  * Role names map to User::ROLES; numeric ids are accepted too.
+ * The organizer is a viewer: whatever group lists them, they may only read.
  */
 class EnsureUserHasRole
 {
@@ -29,6 +30,10 @@ class EnsureUserHasRole
 
         if (!in_array((int) $user->role_id, $allowed, true)) {
             return response()->json(['message' => 'You are not authorized to perform this action.'], 403);
+        }
+
+        if ((int) $user->role_id === User::ROLE_ORGANIZER && !$request->isMethodSafe()) {
+            return response()->json(['message' => 'حساب للعرض فقط'], 403);
         }
 
         return $next($request);

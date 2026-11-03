@@ -3,9 +3,14 @@
 namespace App\Http\Controllers;
 
 use App\Models\Appointment;
+use App\Models\AppointmentLog;
+use App\Models\Doctor;
+use App\Models\DoctorAttendance;
 use App\Models\Event;
 use App\Models\EventSpecialty;
 use App\Models\Specialty;
+use App\Models\User;
+use App\Services\DoctorVisitStats;
 use App\Services\QueueService;
 use App\Support\VisitStatistics;
 use Illuminate\Http\Request;
@@ -19,11 +24,64 @@ use Illuminate\Support\Facades\Log;
  */
 class WaitingListController extends Controller
 {
-    public function __construct(private QueueService $queues)
+    private const CALLING_SECONDS = 30;
+
+    public function __construct(private QueueService $queues, private DoctorVisitStats $visitStats)
     {
     }
 
-    /** "Passed" (إجتاز): examination done, the patient moves to their next specialty. */
+    /**
+     * "Entered" (دخل): one patient, or a family together, goes in to the
+     * chosen doctor. The doctor must be free.
+     */
+    public function enter(Request $request)
+    {
+        $data = $request->validate([
+            'ids' => 'required|array|min:1|max:10',
+            'ids.*' => 'integer|distinct',
+            'doctor_id' => 'required|integer|exists:doctors,id',
+        ]);
+
+        $appointments = Appointment::whereIn('id', $data['ids'])->get();
+        $user = $request->user();
+        if ($appointments->count() !== count($data['ids'])
+            || $appointments->contains(fn ($a) => !$user->canAccessEvent($a->event_id))) {
+            return response()->json(['message' => 'You are not authorized to access this event.'], 403);
+        }
+
+        $doctor = Doctor::findOrFail($data['doctor_id']);
+        $group = $this->queues->enter($appointments, $doctor);
+        foreach ($appointments as $appointment) {
+            $this->audit('entered', $appointment, ['doctor_id' => $doctor->id, 'visit_group' => $group]);
+        }
+
+        return response()->json([
+            'message' => ($appointments->count() > 1 ? 'دخل ' . $appointments->count() . ' زوار' : 'دخل الزائر')
+                . ' عند الطبيب ' . $doctor->full_name,
+            'visit_group' => $group,
+        ]);
+    }
+
+    /** Undo "Entered" (wrong click): the patient goes back to the head of the queue. */
+    public function cancelEnter($id)
+    {
+        $appointment = Appointment::findOrFail($id);
+        $this->queues->cancelEnter($appointment);
+        $this->audit('enter_cancelled', $appointment);
+
+        return response()->json(['message' => 'أُلغي الدخول، عاد الزائر إلى أول الطابور']);
+    }
+
+    /** Family members (same phone) of the patient, for entering together. */
+    public function relatives($id)
+    {
+        return response()->json(['relatives' => $this->queues->relatives(Appointment::findOrFail($id))]);
+    }
+
+    /**
+     * "Passed" (إجتاز): examination done, the patient (with the family that
+     * entered with them) moves to their next specialty.
+     */
     public function Completed($id)
     {
         $appointment = Appointment::with('eventSpecialty.specialty')->findOrFail($id);
@@ -31,16 +89,54 @@ class WaitingListController extends Controller
 
         $this->audit('completed', $appointment);
 
-        if ($next) {
-            $next->load('eventSpecialty.specialty');
+        if ($next->count() === 1) {
+            $first = $next->first()->load('eventSpecialty.specialty');
             return response()->json([
-                'message' => 'تم الفحص، انتقل المريض إلى التخصص التالي',
-                'next_specialty' => $next->eventSpecialty->specialty->name ?? '',
-                'next_appointment' => $next,
+                'message' => 'تم الفحص، انتقل الزائر إلى التخصص التالي',
+                'next_specialty' => $first->eventSpecialty->specialty->name ?? '',
+                'next_appointment' => $first,
             ]);
         }
+        if ($next->count() > 1) {
+            return response()->json(['message' => 'تم الفحص، انتقل ' . $next->count() . ' زوار إلى تخصصاتهم التالية']);
+        }
 
-        return response()->json(['message' => 'أنهى المريض كل تخصصاته لهذا اليوم']);
+        return response()->json(['message' => 'تم الفحص']);
+    }
+
+    /**
+     * Doctors scheduled today in one specialty with their live numbers. Officers
+     * see the doctors who arrived today: a doctor who left still finishes the
+     * patients already in the queue.
+     */
+    public function doctorsPresent(Request $request, $eventSpecialtyId)
+    {
+        $eventSpecialty = EventSpecialty::findOrFail($eventSpecialtyId);
+        $doctors = $this->visitStats->forEvent($eventSpecialty->event_id, [$eventSpecialty->id])
+            ->get($eventSpecialty->id, collect());
+
+        $seesAll = in_array($request->user()->role_id, [User::ROLE_SUPER_ADMIN, User::ROLE_ORGANIZER], true);
+
+        return response()->json([
+            'doctors' => $seesAll ? $doctors : $doctors->filter(fn ($d) => $d['arrived_at'] || $d['busy'])->values(),
+            'server_time' => now()->toIso8601String(),
+        ]);
+    }
+
+    /** "During the event" dashboard: every doctor today with visits, durations and alarms. */
+    public function doctorVisits($eventId)
+    {
+        $event = Event::findOrFail($eventId);
+        $bySpecialty = $this->visitStats->forEvent($event->id);
+        $doctors = $bySpecialty->flatten(1)->sortBy([['specialty', 'asc'], ['full_name', 'asc']])->values();
+
+        return response()->json([
+            'doctors' => $doctors,
+            'timing' => $this->visitStats->timing($event->id, $bySpecialty),
+            'alarm_factor' => DoctorVisitStats::ALARM_FACTOR,
+            'idle_minutes' => DoctorVisitStats::IDLE_MINUTES,
+            'server_time' => now()->toIso8601String(),
+        ]);
     }
 
     /** Special case (priority for the whole day). */
@@ -52,8 +148,27 @@ class WaitingListController extends Controller
         return response()->json([
             'success' => true,
             'message' => $appointment->status === 'Present'
-                ? 'تم تحديد المريض كحالة خاصة (أولوية)'
-                : 'تم تحديد المريض كحالة خاصة، سيُوجَّه بأولوية عند فتح تخصصه',
+                ? 'تم تحديد الزائر كحالة خاصة (أولوية)'
+                : 'تم تحديد الزائر كحالة خاصة، سيُوجَّه بأولوية عند فتح تخصصه',
+            'appointment' => $appointment,
+        ]);
+    }
+
+    /**
+     * Super admin / special admin: place 3 of the queue, with nothing on
+     * screens to tell (unlike a special case). Logged with who and when.
+     */
+    public function moveToFront($id)
+    {
+        $appointment = $this->queues->moveToFront(Appointment::findOrFail($id));
+        $this->audit('moved_to_front', $appointment);
+        AppointmentLog::record('moved_to_front', $appointment->load('eventSpecialty.specialty'), [
+            'specialty' => $appointment->eventSpecialty?->specialty?->name,
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'أصبح الزائر في المركز ' . (\App\Services\QueueService::MOVE_UP_POSITION) . ' في طابور ' . ($appointment->eventSpecialty?->specialty?->name ?? 'التخصص'),
             'appointment' => $appointment,
         ]);
     }
@@ -65,7 +180,7 @@ class WaitingListController extends Controller
         $this->queues->sendToDilatation($appointment);
         $this->audit('dilatation_sent', $appointment);
 
-        return response()->json(['message' => 'أُرسل المريض إلى قاعة التمدد']);
+        return response()->json(['message' => 'أُرسل الزائر إلى قاعة التمدد']);
     }
 
     /** Dilatation officer: the patient arrived in the dilatation room. */
@@ -75,7 +190,7 @@ class WaitingListController extends Controller
         $this->queues->receiveInDilatation($appointment);
         $this->audit('dilatation_received', $appointment);
 
-        return response()->json(['message' => 'تم تسجيل وصول المريض إلى التمدد']);
+        return response()->json(['message' => 'تم تسجيل وصول الزائر إلى التمدد']);
     }
 
     /** Dilatation officer: done, back to the specialty with priority. */
@@ -86,7 +201,7 @@ class WaitingListController extends Controller
         $this->audit('dilatation_finished', $appointment);
 
         return response()->json([
-            'message' => 'عاد المريض إلى ' . ($appointment->eventSpecialty->specialty->name ?? 'التخصص') . ' (أولوية)',
+            'message' => 'عاد الزائر إلى ' . ($appointment->eventSpecialty->specialty->name ?? 'التخصص') . ' (أولوية)',
             'position' => $this->queues->positionOf($appointment->fresh()),
         ]);
     }
@@ -121,7 +236,7 @@ class WaitingListController extends Controller
         $appointment = Appointment::findOrFail($id);
         $this->pushDownAppointments(collect([$appointment]), $places);
 
-        return response()->json(['message' => 'تم إنزال المريض ' . $places . ' مراتب']);
+        return response()->json(['message' => 'تم إنزال الزائر ' . $places . ' مراتب']);
     }
 
     /** Push down several patients of the same event at once. */
@@ -144,7 +259,7 @@ class WaitingListController extends Controller
         $this->pushDownAppointments($appointments, $places);
 
         return response()->json([
-            'message' => 'تم إنزال ' . $appointments->count() . ' مريض ' . $places . ' مراتب',
+            'message' => 'تم إنزال ' . $appointments->count() . ' زائر ' . $places . ' مراتب',
         ]);
     }
 
@@ -152,8 +267,10 @@ class WaitingListController extends Controller
     public function referralOptions($id)
     {
         $appointment = Appointment::findOrFail($id);
+        // Booked by this patient number, or by the same person under another number
         $booked = Appointment::where('event_id', $appointment->event_id)
-            ->where('patient_id', $appointment->patient_id)
+            ->where(fn ($q) => $q->where('patient_id', $appointment->patient_id)
+                ->orWhere('identity_key', Appointment::identityKey($appointment->full_name, $appointment->birthday)))
             ->pluck('event_specialty_id');
 
         $options = EventSpecialty::with('specialty')
@@ -183,7 +300,7 @@ class WaitingListController extends Controller
         $this->audit('referred', $current, ['to_appointment' => $new->id]);
 
         return response()->json([
-            'message' => 'تم إرسال المريض إلى ' . ($target->specialty->name ?? 'التخصص الجديد'),
+            'message' => 'تم إرسال الزائر إلى ' . ($target->specialty->name ?? 'التخصص الجديد'),
             'appointment' => $new,
             'position' => $this->queues->positionOf($new),
         ]);
@@ -203,9 +320,16 @@ class WaitingListController extends Controller
             Log::info('Specialty closed', ['event_specialty_id' => $eventSpecialty->id, 'by' => Auth::id()]);
 
             return response()->json([
-                'message' => 'أُغلق التخصص، لن يُرسل إليه مرضى جدد',
+                'message' => 'أُغلق التخصص، لن يُرسل إليه زوار جدد',
                 'is_open' => false,
             ]);
+        }
+
+        $doctorPresent = DoctorAttendance::whereNotNull('arrived_at')->whereNull('left_at')
+            ->whereHas('day', fn ($q) => $q->where('event_specialty_id', $eventSpecialty->id)->whereDate('day_date', QueueService::today()))
+            ->exists();
+        if (!$doctorPresent) {
+            return response()->json(['message' => 'لا يُفتح الطابور دون طبيب حاضر، سجّل وصول طبيب أولاً'], 422);
         }
 
         $result = $this->queues->openSpecialty($eventSpecialty);
@@ -213,7 +337,7 @@ class WaitingListController extends Controller
 
         $message = 'فُتح التخصص';
         if ($result['sent'] + $result['moved'] > 0) {
-            $message .= '، أُرسل إليه ' . ($result['sent'] + $result['moved']) . ' مريض';
+            $message .= '، أُرسل إليه ' . ($result['sent'] + $result['moved']) . ' زائر';
             if ($result['moved'] > 0) {
                 $message .= ' (' . $result['moved'] . ' من طوابير أخرى)';
             }
@@ -248,10 +372,12 @@ class WaitingListController extends Controller
                     'specialty_id' => $es->specialty_id,
                     'name' => $es->specialty->name ?? '',
                     'is_open' => $es->isOpenToday(),
+                    'is_full' => $es->isOpenToday() && $this->queues->capacity($es->id)['full'],
                     'has_dilatation' => (bool) $es->has_dilatation,
                     'in_queue' => $sum(QueueService::QUEUE_STATUSES),
                     'waiting' => $sum(['Waiting']),
                     'completed' => $sum(['Completed']),
+                    'in_visit' => $sum(['Entered']),
                     'dilatation_coming' => $sum(['DilatationSent']),
                     'dilatation_in_room' => $sum(['Dilatation']),
                 ];
@@ -300,6 +426,8 @@ class WaitingListController extends Controller
             'speciality' => $specialty->name,
             'event_specialty_id' => $eventSpecialty?->id,
             'is_open' => (bool) $eventSpecialty?->isOpenToday(),
+            // Full: a doctor left and the others' planned visits are reached; only those in it are served
+            'capacity' => $eventSpecialty ? $this->queues->capacity($eventSpecialty->id) : null,
             'has_dilatation' => (bool) $eventSpecialty?->has_dilatation,
             'summary' => $summary,
             'today' => QueueService::today(),
@@ -350,8 +478,36 @@ class WaitingListController extends Controller
             ];
         }
 
+        // Just entered (دخل): shown on top of their specialty for CALLING_SECONDS
+        $calling = DB::table('appointments')
+            ->join('event_specialties', 'appointments.event_specialty_id', '=', 'event_specialties.id')
+            ->where('appointments.event_id', $event->id)
+            ->where('appointments.status', 'Entered')
+            ->where('appointments.entered_at', '>=', now()->subSeconds(self::CALLING_SECONDS))
+            ->orderBy('appointments.entered_at')
+            ->select('appointments.patient_id', 'appointments.full_name', 'appointments.sex', 'event_specialties.specialty_id')
+            ->get()
+            ->groupBy('specialty_id')
+            ->map(fn ($rows) => $rows->map(fn ($r) => [
+                'patient_id' => $r->patient_id,
+                'full_name' => $r->full_name,
+                'sex' => $r->sex,
+            ])->values());
+
+        // Specialties that worked today and take no new patients now (closed
+        // after their doctors left, or full after one left); not those whose doctor hasn't come yet
+        $closed = EventSpecialty::where('event_id', $event->id)
+            ->whereHas('days', fn ($q) => $q->whereDate('day_date', QueueService::today())
+                ->whereHas('attendances', fn ($a) => $a->whereNotNull('arrived_at')))
+            ->get(['id', 'specialty_id', 'opened_on'])
+            ->filter(fn ($es) => !$es->isOpenToday() || $this->queues->capacity($es->id)['full'])
+            ->pluck('specialty_id')
+            ->values();
+
         return response()->json([
             'data' => $grouped,
+            'calling' => $calling,
+            'closed_specialties' => $closed,
             'event' => ['id' => $event->id, 'name' => $event->name],
             'timestamp' => now()->toIso8601String(),
             'total_patients' => $rows->count(),
@@ -371,7 +527,7 @@ class WaitingListController extends Controller
     {
         foreach ($appointments as $appointment) {
             if (!in_array($appointment->status, QueueService::QUEUE_STATUSES, true)) {
-                abort(response()->json(['message' => 'أحد المرضى المختارين ليس في قائمة الانتظار'], 422));
+                abort(response()->json(['message' => 'أحد الزوار المختارين ليس في قائمة الانتظار'], 422));
             }
         }
 

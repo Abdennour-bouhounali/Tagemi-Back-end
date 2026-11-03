@@ -21,6 +21,18 @@ class Appointment extends Model
                 $appointment->identity_key = self::identityKey($appointment->full_name, $appointment->birthday);
             }
         });
+
+        // Patient history: every status change, by whom, during which action
+        static::updated(function (Appointment $appointment) {
+            if ($appointment->wasChanged('status')) {
+                AppointmentLog::statusChanged($appointment, $appointment->getRawOriginal('status'));
+            }
+        });
+        static::created(function (Appointment $appointment) {
+            if ($appointment->status && $appointment->status !== 'Pending') {
+                AppointmentLog::statusChanged($appointment, null);
+            }
+        });
     }
 
     /**
@@ -29,12 +41,18 @@ class Appointment extends Model
      */
     public static function identityKey($fullName, $birthday): string
     {
-        $name = preg_replace('/[\x{064B}-\x{0652}\x{0670}\x{0640}]/u', '', (string) $fullName);
-        $name = strtr($name, ['أ' => 'ا', 'إ' => 'ا', 'آ' => 'ا', 'ٱ' => 'ا', 'ى' => 'ي', 'ة' => 'ه', 'ؤ' => 'و', 'ئ' => 'ي']);
-        $name = mb_strtolower(trim(preg_replace('/\s+/u', ' ', $name)));
         $date = $birthday ? \Illuminate\Support\Carbon::parse($birthday)->format('Y-m-d') : '';
 
-        return sha1($name . '|' . $date);
+        return sha1(self::nameKey($fullName) . '|' . $date);
+    }
+
+    /** The name part of identityKey(), readable (also used to spot double registrations). */
+    public static function nameKey($fullName): string
+    {
+        $name = preg_replace('/[\x{064B}-\x{0652}\x{0670}\x{0640}]/u', '', (string) $fullName);
+        $name = strtr($name, ['أ' => 'ا', 'إ' => 'ا', 'آ' => 'ا', 'ٱ' => 'ا', 'ى' => 'ي', 'ة' => 'ه', 'ؤ' => 'و', 'ئ' => 'ي']);
+
+        return mb_strtolower(trim(preg_replace('/\s+/u', ' ', $name)));
     }
 
     protected $fillable = [
@@ -76,6 +94,9 @@ class Appointment extends Model
         'is_priority' => 'boolean',
         'dilatation_sent_at' => 'datetime',
         'dilatation_started_at' => 'datetime',
+        'entered_at' => 'datetime',
+        'completed_at' => 'datetime',
+        'visit_seconds' => 'integer',
         'is_test' => 'boolean',
         'is_reminded' => 'boolean', // NEW
         'reminded_at' => 'datetime', // NEW

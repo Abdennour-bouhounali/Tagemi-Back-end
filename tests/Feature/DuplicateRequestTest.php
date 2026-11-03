@@ -84,6 +84,9 @@ class DuplicateRequestTest extends TestCase
         $admin->forceFill(['role_id' => 1])->save();
         Sanctum::actingAs($admin);
         $esId = $this->slot['event_specialty_id'];
+        // A queue only opens with a doctor present
+        $doctorId = DB::table('doctors')->insertGetId(['first_name' => 'D', 'family_name' => 'Dr', 'specialty_id' => DB::table('event_specialties')->where('id', $esId)->value('specialty_id'), 'sector' => 'public', 'is_active' => 1, 'sex' => 'male']);
+        DB::table('doctor_attendances')->insert(['day_id' => $this->slot['day_id'], 'doctor_id' => $doctorId, 'arrived_at' => now()]);
 
         // Open then close right away: both must happen (same request, opposite effects)
         $this->patchJson("/api/event-specialties/{$esId}/toggle-open")->assertOk()->assertJsonPath('is_open', true);

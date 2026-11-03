@@ -20,6 +20,8 @@ class User extends Authenticatable
     public const ROLE_CONTENT_ADMIN = 7;
     // Runs the specialty queues like a check admin, but may only push patients down (إنزال)
     public const ROLE_PATIENT_MANAGER = 8;
+    // مسؤول التنظيم: sees every screen of their event, can change nothing
+    public const ROLE_ORGANIZER = 9;
 
     // Names usable in the `role:` route middleware
     public const ROLES = [
@@ -31,6 +33,7 @@ class User extends Authenticatable
         'doctor' => self::ROLE_DOCTOR,
         'content_admin' => self::ROLE_CONTENT_ADMIN,
         'patient_manager' => self::ROLE_PATIENT_MANAGER,
+        'organizer' => self::ROLE_ORGANIZER,
     ];
 
     // role_id and event_id are deliberately NOT fillable: they must only be

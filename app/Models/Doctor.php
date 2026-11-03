@@ -22,10 +22,12 @@ class Doctor extends Model
         'specialty_id',
         'sector',
         'is_active',
+        'is_simulation',
     ];
 
     protected $casts = [
         'is_active' => 'boolean',
+        'is_simulation' => 'boolean',
     ];
 
     protected $appends = ['full_name'];

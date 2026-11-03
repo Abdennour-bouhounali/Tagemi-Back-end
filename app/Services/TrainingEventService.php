@@ -4,6 +4,8 @@ namespace App\Services;
 
 use App\Models\Appointment;
 use App\Models\Day;
+use App\Models\Doctor;
+use App\Models\DoctorInterval;
 use App\Models\Event;
 use App\Models\EventSpecialty;
 use App\Models\Hour;
@@ -14,6 +16,10 @@ use Illuminate\Support\Facades\DB;
 /**
  * The training event: a simulation of a real visit day, created for today with
  * fake pending patients so staff can practice the whole flow.
+ *
+ * It also holds a few people registered twice (DUPLICATE_CASES) to practice
+ * the merge at the presence desk, and fake doctors (DOCTORS) working the whole
+ * day, so "وصل" / "دخل" / "إجتاز" can be practiced.
  *
  * reset() rebuilds everything under the event as if it were new, so nothing
  * done during the training (statuses, queue openings, evaluations, extra
@@ -32,6 +38,46 @@ class TrainingEventService
     private const FIRST_NAMES_M = ['محمد', 'أحمد', 'يوسف', 'عمر', 'إبراهيم', 'خالد', 'مصطفى', 'عبد الله', 'ياسين', 'سليمان', 'رشيد', 'كمال', 'نبيل', 'سمير', 'حمزة'];
     private const FIRST_NAMES_F = ['فاطمة', 'خديجة', 'عائشة', 'مريم', 'أمينة', 'سارة', 'نادية', 'سعاد', 'ليلى', 'حنان', 'إيمان', 'زينب', 'سميرة', 'وردة', 'آسيا'];
     private const LAST_NAMES = ['بن عمر', 'بوعلام', 'مرابط', 'حداد', 'بلقاسم', 'شريف', 'زروقي', 'عمراني', 'بوزيد', 'قاسمي', 'مداني', 'حمدي', 'بن يوسف', 'سعدي', 'لعربي', 'بوشامة', 'ختير', 'تومي', 'غربي', 'رحماني'];
+    /**
+     * People who registered twice (two form submissions instead of one form
+     * with several specialties), for practicing the merge at the presence desk.
+     * Each registration: [name, birthday, sex, phone, specialty indexes].
+     * The name and phone are typed differently, as people really do.
+     */
+    public const DUPLICATE_COMMENT = 'تسجيل مكرر (تدريب)';
+    public const DUPLICATE_CASES = [
+        // Two specialties in two submissions: merge, then presence works
+        [['سمير بن قاسم', '1985-03-03', '0', '0555 99 88 77', [0]], ['سمير  بن  قاسم', '1985-03-04', '0', '+213555998877', [1]]],
+        // 2 + 2 specialties, the event allows 3: after merging, delete one before presence
+        [['فاطمة زهراء بلعيد', '1972-07-10', '1', '0661 22 33 44', [0, 2]], ['فاطمة  زهراء بلعيد', '1972-07-11', '1', '0661223344', [3, 4]]],
+        // The same specialty twice: after merging, delete one of the two
+        [['محمد أمين قاصي', '1990-01-15', '0', '0770112233', [1]], ['محمد امين قاصي', '1991-01-15', '0', '0770 11 22 33', [1]]],
+        // Same phone, other name (a family): no merge proposed
+        [['عبد القادر حمدي', '1960-05-05', '0', '0550 44 55 66', [0]], ['خديجة حمدي', '1965-09-09', '1', '0550445566', [2]]],
+        // Registered three times: two proposals
+        [['يوسف شريف بوعلام', '2001-11-20', '0', '0699 87 65 43', [0]], ['يوسف شريف  بوعلام', '2001-11-21', '0', '0699876543', [1]], ['يوسف شريف بوعلام', '2001-11-22', '0', '+213 699 87 65 43', [2]]],
+    ];
+
+    /**
+     * Fake doctors, per specialty index: [first name, family name, sex].
+     * One doctor sees a patient every 15 minutes, two doctors every 30 minutes
+     * each: 4 visits per hour either way, the training event's PER_HOUR.
+     */
+    public const DOCTORS = [
+        [['كريم', 'بلحاج', 'male'], ['نسيمة', 'عزوز', 'female']],
+        [['أمال', 'دراجي', 'female']],
+        [['رضا', 'بن صالح', 'male'], ['سليم', 'فرحات', 'male']],
+        [['هدى', 'بوطالب', 'female']],
+        [['مراد', 'سلامي', 'male'], ['لمياء', 'حمادي', 'female']],
+        [['فريد', 'منصوري', 'male']],
+        [['صبرينة', 'بوعزة', 'female'], ['عادل', 'جلولي', 'male']],
+        [['جمال', 'زيتوني', 'male']],
+    ];
+    private const DOCTOR_END = '18:00:00';
+    // Planned visit minutes that differ from the 4-per-hour pace, by specialty name.
+    // 1 minute: the long-visit alarm (1.5x) rings after 90 s, quick to practice.
+    public const VISIT_MINUTES = ['طب العظام والمفاصل' => 1];
+
     private const STATES = [['الجزائر', 'الجزائر الوسطى'], ['وهران', 'وهران'], ['قسنطينة', 'قسنطينة'], ['البليدة', 'البليدة'], ['سطيف', 'سطيف']];
 
     /** The visit day's "today" (same clock as the queue). */
@@ -52,7 +98,7 @@ class TrainingEventService
             $event = Event::create([
                 'name' => 'حدث تدريبي (محاكاة)',
                 'date' => self::today(),
-                'description' => 'حدث للتدريب فقط. المواعيد والمرضى هنا غير حقيقيين ولن تعمل في الواقع.',
+                'description' => 'حدث للتدريب فقط. المواعيد والزوار هنا غير حقيقيين ولن تعمل في الواقع.',
                 'nbr_of_allowed_specialties' => 3,
                 'rules_ids' => [],
                 'is_active' => true,
@@ -100,7 +146,8 @@ class TrainingEventService
         DB::table('evaluations')->where('event_id', $event->id)->delete();
         DB::table('event_reports')->where('event_id', $event->id)->delete();
         DB::table('event_doctors')->where('event_id', $event->id)->delete();
-        EventSpecialty::where('event_id', $event->id)->delete();
+        EventSpecialty::where('event_id', $event->id)->delete(); // their intervals and attendances cascade
+        Doctor::where('is_simulation', true)->delete();
     }
 
     private function build(Event $event): void
@@ -139,6 +186,7 @@ class TrainingEventService
             }
 
             $slots[] = [$eventSpecialty, $day, $hours];
+            $this->addDoctors($eventSpecialty, $day, self::DOCTORS[(count($slots) - 1) % count(self::DOCTORS)], self::VISIT_MINUTES[trim($specialty->name)] ?? null);
         }
 
         if (!$slots) {
@@ -148,6 +196,28 @@ class TrainingEventService
         $nextPatientId = (int) Appointment::max('patient_id') + 1;
         $perSpecialty = array_fill(0, count($slots), 0);
         $count = count($slots);
+
+        // One appointment in the next free place of specialty $s
+        $book = function (int $s, array $patient, int $order) use (&$slots, &$perSpecialty, $event) {
+            [$eventSpecialty, $day, $hours] = $slots[$s];
+            $k = $perSpecialty[$s]++;
+            $hour = $hours[intdiv($k, self::PER_HOUR)];
+
+            Appointment::create($patient + [
+                'user_id' => 1,
+                'event_id' => $event->id,
+                'event_specialty_id' => $eventSpecialty->id,
+                'day_id' => $day->id,
+                'hour_id' => $hour->id,
+                'doctor_id' => null,
+                'diseases' => 'تجريبي',
+                'specialty_order' => $order === 0 ? 1 : 0,
+                'position' => $k % self::PER_HOUR + 1,
+                'orderList' => 0,
+                'status' => 'Pending',
+            ]);
+            $hour->counter++;
+        };
 
         // Patients book 1, 2 or 3 specialties (65 patients, 100 appointments)
         $created = 0;
@@ -163,18 +233,7 @@ class TrainingEventService
             $patientId = $nextPatientId++;
 
             for ($j = 0; $j < $wanted; $j++) {
-                $s = ($p + $j * 3) % $count; // distinct specialties for one patient
-                [$eventSpecialty, $day, $hours] = $slots[$s];
-                $k = $perSpecialty[$s]++;
-                $hour = $hours[intdiv($k, self::PER_HOUR)];
-
-                Appointment::create([
-                    'user_id' => 1,
-                    'event_id' => $event->id,
-                    'event_specialty_id' => $eventSpecialty->id,
-                    'day_id' => $day->id,
-                    'hour_id' => $hour->id,
-                    'doctor_id' => null,
+                $book(($p + $j * 3) % $count, [ // distinct specialties for one patient
                     'full_name' => $name,
                     'birthday' => $birthday,
                     'state' => $state,
@@ -182,17 +241,30 @@ class TrainingEventService
                     'sex' => $male ? '0' : '1',
                     'phone' => $phone,
                     'phone2' => $phone,
-                    'diseases' => 'تجريبي',
-                    'comment' => 'مريض تجريبي',
+                    'comment' => 'زائر تجريبي',
                     'patient_id' => $patientId,
-                    'specialty_order' => $j === 0 ? 1 : 0,
-                    'position' => $k % self::PER_HOUR + 1,
-                    'orderList' => 0,
-                    'status' => 'Pending',
-                ]);
-
-                $hour->counter++;
+                ], $j);
                 $created++;
+            }
+        }
+
+        foreach (self::DUPLICATE_CASES as $c => $registrations) {
+            [$state, $city] = self::STATES[$c % count(self::STATES)];
+            foreach ($registrations as [$name, $birthday, $sex, $phone, $indexes]) {
+                $patientId = $nextPatientId++;
+                foreach ($indexes as $j => $s) {
+                    $book($s % $count, [
+                        'full_name' => $name,
+                        'birthday' => $birthday,
+                        'state' => $state,
+                        'city' => $city,
+                        'sex' => $sex,
+                        'phone' => $phone,
+                        'phone2' => $phone,
+                        'comment' => self::DUPLICATE_COMMENT,
+                        'patient_id' => $patientId,
+                    ], $j);
+                }
             }
         }
 
@@ -202,6 +274,41 @@ class TrainingEventService
                     $hour->save();
                 }
             }
+        }
+    }
+
+    /**
+     * The specialty's fake doctors, working from the first hour to DOCTOR_END, not arrived yet.
+     * $visitMinutes: planned visit time, else the one giving PER_HOUR visits per hour.
+     */
+    private function addDoctors(EventSpecialty $eventSpecialty, Day $day, array $doctors, ?int $visitMinutes = null): void
+    {
+        $start = DoctorScheduleService::minutes(self::HOURS[0]);
+        $end = DoctorScheduleService::minutes(self::DOCTOR_END);
+        $visitMinutes ??= intdiv(60 * count($doctors), self::PER_HOUR);
+
+        foreach ($doctors as [$firstName, $familyName, $sex]) {
+            $doctor = Doctor::create([
+                'first_name' => $firstName,
+                'family_name' => $familyName,
+                'sex' => $sex,
+                'specialty_id' => $eventSpecialty->specialty_id,
+                'sector' => 'public',
+                'is_active' => true,
+                'is_simulation' => true,
+            ]);
+
+            DoctorInterval::create([
+                'day_id' => $day->id,
+                'doctor_id' => $doctor->id,
+                'start_time' => self::HOURS[0],
+                'end_time' => self::DOCTOR_END,
+                'visit_minutes' => $visitMinutes,
+                'extra_visits' => 0,
+                'visits_count' => DoctorScheduleService::visits($start, $end, $visitMinutes),
+            ]);
+
+            $eventSpecialty->doctors()->attach($doctor->id);
         }
     }
 }
