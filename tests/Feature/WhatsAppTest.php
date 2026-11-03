@@ -137,6 +137,17 @@ class WhatsAppTest extends TestCase
         $this->getJson('/api/whatsapp/templates')->assertStatus(422);
     }
 
+    public function test_status_warns_when_meta_sends_from_another_number(): void
+    {
+        $this->fakeMeta(); // Meta answers +213 555 00 00 00
+        config(['services.whatsapp.sender_number' => '+213772712595']);
+        $this->getJson('/api/whatsapp/status')->assertOk()
+            ->assertJson(['configured' => true, 'sender_number' => '+213772712595', 'sender_mismatch' => true]);
+
+        config(['services.whatsapp.sender_number' => '0555000000']);
+        $this->getJson('/api/whatsapp/status')->assertOk()->assertJson(['sender_mismatch' => false]);
+    }
+
     public function test_templates_show_their_variables(): void
     {
         $this->fakeMeta();

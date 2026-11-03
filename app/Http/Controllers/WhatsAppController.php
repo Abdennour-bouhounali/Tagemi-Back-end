@@ -54,6 +54,11 @@ class WhatsAppController extends Controller
             'webhook_url' => url('/api/whatsapp/webhook'),
             'fields' => WhatsAppAudience::FIELDS,
             'tokens' => array_keys(WhatsAppAudience::TOKENS),
+            'sender_number' => config('services.whatsapp.sender_number'),
+            // Meta sends from another number than the foundation's: a setup mistake to show
+            'sender_mismatch' => $phone && config('services.whatsapp.sender_number')
+                && substr(preg_replace('/\D/', '', (string) ($phone['display_phone_number'] ?? '')), -9)
+                    !== substr(preg_replace('/\D/', '', (string) config('services.whatsapp.sender_number')), -9),
         ]);
     }
 
