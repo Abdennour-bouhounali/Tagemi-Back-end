@@ -34,6 +34,8 @@ class DoctorAttendanceTest extends TestCase
         foreach ([1 => 'SuperAdmin', 2 => 'SimpleUser', 4 => 'CheckAdmin'] as $id => $name) {
             DB::table('roles')->updateOrInsert(['id' => $id], ['name' => $name]);
         }
+        // Booking code (training patients too) stores user_id = 1; CI starts from an empty database
+        DB::table('users')->updateOrInsert(['id' => 1], ['name' => 'admin', 'email' => 'admin1@test.local', 'password' => bcrypt('x'), 'role_id' => 1]);
         $this->specialtyId = DB::table('specialties')->insertGetId(['name' => 'عيون' . uniqid()]);
         $this->drA = $this->doctor('أ');
         $this->drB = $this->doctor('ب');
