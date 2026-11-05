@@ -36,10 +36,10 @@ class AuthorizationTest extends TestCase
 
     private function makeEvent(string $name): array
     {
-        $eventId = DB::table('events')->insertGetId(['name' => $name, 'date' => now()->toDateString(), 'is_active' => 1, 'is_archived' => 0]);
+        $eventId = DB::table('events')->insertGetId(['name' => $name, 'date' => QueueService::today(), 'is_active' => 1, 'is_archived' => 0]);
         $specialtyId = DB::table('specialties')->insertGetId(['name' => "Spec {$name}"]);
         $esId = DB::table('event_specialties')->insertGetId(['event_id' => $eventId, 'specialty_id' => $specialtyId, 'opened_on' => QueueService::today()]);
-        $dayId = DB::table('days')->insertGetId(['event_specialty_id' => $esId, 'day_date' => now()->toDateString()]);
+        $dayId = DB::table('days')->insertGetId(['event_specialty_id' => $esId, 'day_date' => QueueService::today()]);
         $hourId = DB::table('hours')->insertGetId(['day_id' => $dayId, 'time' => '08:00:00']);
         $patientId = random_int(100000, 999999);
         $appointmentId = DB::table('appointments')->insertGetId([
