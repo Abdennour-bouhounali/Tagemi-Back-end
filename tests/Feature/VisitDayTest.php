@@ -981,7 +981,8 @@ class VisitDayTest extends TestCase
         $this->assertCount(3, $this->getJson("{$url}&limit=999")->json("data.{$specialtyId}"));
     }
 
-    public function test_organizer_sees_everything_and_changes_nothing(): void
+    /** Organizer: live statistics «أثناء الحدث» only (and the public hall screen), changes nothing. */
+    public function test_organizer_sees_only_live_statistics_and_changes_nothing(): void
     {
         [$a] = $this->esIds();
         $p = $this->patient([[$a, 'today']]);
@@ -990,12 +991,21 @@ class VisitDayTest extends TestCase
         $specialtyId = DB::table('event_specialties')->where('id', $a)->value('specialty_id');
 
         Sanctum::actingAs($this->staff(User::ROLE_ORGANIZER));
-        $this->getJson("/api/events/{$this->eventId}/stations")->assertOk();
-        $this->getJson("/api/waitinglist/GetWaitingListBySpeciality/{$this->eventId}/{$specialtyId}")->assertOk();
-        $this->getJson("/api/event-specialties/{$a}/doctors-present")->assertOk()->assertJsonPath('doctors.0.doctor_id', $doctor->id);
-        $this->getJson("/api/events/{$this->eventId}/doctor-visits")->assertOk();
-        $this->getJson("/api/events/{$this->eventId}/doctors-today")->assertOk();
+        // The live statistics page reads these
+        $this->getJson("/api/events/{$this->eventId}")->assertOk();
         $this->getJson("/api/appointments/event-statistics/{$this->eventId}")->assertOk();
+        $this->getJson("/api/appointments/by-event?event_id={$this->eventId}")->assertOk();
+        $this->getJson("/api/events/{$this->eventId}/appointment-distribution")->assertOk();
+        $this->getJson("/api/events/{$this->eventId}/doctor-visits")->assertOk();
+        $this->getJson("/api/public/waitinglist?event_id={$this->eventId}")->assertOk();
+        // No specialty lists, presence desk or doctors' board
+        $this->getJson("/api/events/{$this->eventId}/stations")->assertForbidden();
+        $this->getJson("/api/waitinglist/GetWaitingListBySpeciality/{$this->eventId}/{$specialtyId}")->assertForbidden();
+        $this->getJson("/api/event-specialties/{$a}/doctors-present")->assertForbidden();
+        $this->getJson("/api/event-specialties/{$a}/dilatation-room")->assertForbidden();
+        $this->getJson("/api/events/{$this->eventId}/doctors-today")->assertForbidden();
+        $this->getJson("/api/events/{$this->eventId}/duplicates")->assertForbidden();
+        $this->getJson("/api/appointments/search?event_id={$this->eventId}&q=1")->assertForbidden();
 
         $this->enter([$p['ids'][0]], $doctor)->assertForbidden();
         $this->postJson("/api/waitinglist/Commingsoon/{$p['ids'][0]}")->assertForbidden();

@@ -536,7 +536,7 @@ class EventDaySimulationTest extends TestCase
                         $this->as('organizer', 'POST', "/api/waitinglist/Complete/{$a}")->assertStatus(403);
                         $this->as('organizer', 'POST', "/api/events/{$this->eventId}/check-in", ['patient_id' => 1])->assertStatus(403);
                     }
-                    $this->as('organizer', 'GET', "/api/events/{$this->eventId}/stations")->assertOk();
+                    $this->as('organizer', 'GET', "/api/events/{$this->eventId}/stations")->assertStatus(403);
                     $this->as('organizer', 'GET', "/api/events/{$this->eventId}/doctor-visits")->assertOk();
                     break;
             }
@@ -594,9 +594,10 @@ class EventDaySimulationTest extends TestCase
             ['PATCH', "/api/appointments/{$a}/reschedule", [], ['super']],
             ['PATCH', "/api/event-specialties/{$eyes}/toggle-open", [], ['super']],
             ['POST', "/api/event-specialties/{$eyes}/doctors/{$doctor}/leave", [], ['super']],
-            ['GET', "/api/events/{$this->eventId}/stations", [], ['super', 'officer', 'manager', 'organizer']],
-            ['GET', "/api/events/{$this->eventId}/doctors-today", [], ['super', 'organizer']],
-            ['GET', "/api/events/{$this->eventId}/duplicates", [], ['super', 'special', 'reception', 'organizer']],
+            ['GET', "/api/events/{$this->eventId}/stations", [], ['super', 'officer', 'manager']],
+            ['GET', "/api/events/{$this->eventId}/doctors-today", [], ['super']],
+            ['GET', "/api/events/{$this->eventId}/duplicates", [], ['super', 'special', 'reception']],
+            ['GET', "/api/appointments/event-statistics/{$this->eventId}", [], ['super', 'special', 'reception', 'organizer']],
         ];
 
         $wrong = [];
@@ -791,7 +792,8 @@ class EventDaySimulationTest extends TestCase
         $doctorUser->forceFill(['role_id' => 6, 'event_id' => $this->eventId])->save();
         $this->users['doctor'] = $doctorUser;
 
-        foreach (['doctor', 'manager', 'organizer'] as $who) {
+        $this->as('organizer', 'GET', "/api/event-specialties/{$eyes}/dilatation-room")->assertStatus(403);
+        foreach (['doctor', 'manager'] as $who) {
             $this->as($who, 'GET', "/api/event-specialties/{$eyes}/dilatation-room")->assertOk()->assertJsonCount(1, 'coming');
             $this->as($who, 'POST', "/api/waitinglist/DilatationArrived/{$p['ids'][0]}")->assertStatus(403);
         }

@@ -152,20 +152,24 @@ Route::middleware('auth:sanctum')->group(function () {
             ->middleware('event.access:event,eventId');
     });
 
-    // Reception (recipient admin) and special-cases admin: presence desk.
-    // The organizer (viewer) is refused every write by the role middleware.
+    // Organizer (مسؤول التنظيم): the live statistics «أثناء الحدث» read these two;
+    // since 2026-11-05 no presence desk, no specialty lists (hall screen is public)
     Route::middleware('role:super_admin,special_admin,recipient_admin,organizer')->group(function () {
+        Route::get('/appointments/by-event', [AppointmentController::class, 'getByEvent'])
+            ->middleware('event.access:event,event_id');
+        Route::get('/appointments/event-statistics/{eventId}', [AppointmentController::class, 'getEventStatistics'])
+            ->middleware('event.access:event,eventId');
+    });
+
+    // Reception (recipient admin) and special-cases admin: presence desk.
+    Route::middleware('role:super_admin,special_admin,recipient_admin')->group(function () {
         Route::get('/event-specialties/{id}/days', [EventController::class, 'getDays'])
             ->middleware('event.access:event_specialty,id');
         Route::get('/days/{id}/hours', [EventController::class, 'getHours'])
             ->middleware('event.access:day,id');
 
-        Route::get('/appointments/by-event', [AppointmentController::class, 'getByEvent'])
-            ->middleware('event.access:event,event_id');
         Route::get('/appointments/search', [AppointmentController::class, 'search'])
             ->middleware('event.access:own,event_id');
-        Route::get('/appointments/event-statistics/{eventId}', [AppointmentController::class, 'getEventStatistics'])
-            ->middleware('event.access:event,eventId');
         Route::get('/check-slot-availability', [AppointmentController::class, 'checkSlotAvailability'])
             ->middleware('event.access:event_specialty,event_specialty_id');
 
@@ -234,7 +238,7 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     // Specialty queue (check admin), patient manager and doctors
-    Route::middleware('role:super_admin,check_admin,doctor,patient_manager,organizer')->group(function () {
+    Route::middleware('role:super_admin,check_admin,doctor,patient_manager')->group(function () {
         Route::get('/events/{eventId}/stations', [WaitingListController::class, 'stations'])
             ->middleware('event.access:event,eventId');
         Route::get('waitinglist/GetWaitingListBySpeciality/{eventId}/{specialityId}', [WaitingListController::class, 'GetWaitingListBySpeciality'])
@@ -242,7 +246,7 @@ Route::middleware('auth:sanctum')->group(function () {
         // Doctors of the specialty today, with who is with a patient now
         Route::get('/event-specialties/{id}/doctors-present', [WaitingListController::class, 'doctorsPresent'])
             ->whereNumber('id')->middleware('event.access:event_specialty,id');
-        // Dilatation room: run by the officer; doctors, patient manager and organizer look only
+        // Dilatation room: run by the officer; doctors and patient manager look only
         Route::get('/event-specialties/{id}/dilatation-room', [WaitingListController::class, 'dilatationRoom'])
             ->middleware('event.access:event_specialty,id');
     });
@@ -256,7 +260,7 @@ Route::middleware('auth:sanctum')->group(function () {
             ->middleware('event.access:appointment,id');
         Route::post('/waitinglist/push-down', [WaitingListController::class, 'pushDownMany']); // event checked per appointment
     });
-    Route::middleware('role:super_admin,check_admin,organizer')->group(function () {
+    Route::middleware('role:super_admin,check_admin')->group(function () {
         // دخل (with the chosen doctor; a family enters together), then إجتاز
         Route::post('/waitinglist/enter', [WaitingListController::class, 'enter']); // event checked per appointment
         Route::post('waitinglist/cancel-enter/{id}', [WaitingListController::class, 'cancelEnter'])
@@ -278,9 +282,11 @@ Route::middleware('auth:sanctum')->group(function () {
             ->middleware('event.access:appointment,id');
     });
     // Visit day dashboards: super admin and the organizer (viewer) of the event
-    Route::middleware('role:super_admin,organizer')->group(function () {
+    Route::middleware('role:super_admin')->group(function () {
         Route::get('/events/{id}/doctors-today', [DoctorAttendanceController::class, 'today'])
             ->whereNumber('id')->middleware('event.access:event,id');
+    });
+    Route::middleware('role:super_admin,organizer')->group(function () {
         Route::get('/events/{id}/appointment-distribution', [EventController::class, 'getAppointmentDistribution'])
             ->whereNumber('id')->middleware('event.access:event,id');
         Route::get('/events/{id}/doctor-visits', [WaitingListController::class, 'doctorVisits'])
