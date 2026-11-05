@@ -24,7 +24,6 @@ use Illuminate\Support\Facades\Log;
  */
 class WaitingListController extends Controller
 {
-    private const CALLING_SECONDS = 30;
 
     public function __construct(private QueueService $queues, private DoctorVisitStats $visitStats)
     {
@@ -474,10 +473,46 @@ class WaitingListController extends Controller
         // Whole queue length per specialty (the screen lists only the first 10)
         $counts = $rows->countBy('specialty_id');
 
+        // With the doctor now (دخل): «عند الطبيب» on top of their specialty until «إجتاز»
+        $inside = DB::table('appointments')
+            ->join('event_specialties', 'appointments.event_specialty_id', '=', 'event_specialties.id')
+            ->join('days', 'appointments.day_id', '=', 'days.id')
+            ->where('appointments.event_id', $event->id)
+            ->whereDate('days.day_date', QueueService::today())
+            ->where('appointments.status', 'Entered')
+            ->orderBy('appointments.entered_at')
+            ->orderBy('appointments.id')
+            ->select('appointments.patient_id', 'appointments.full_name', 'appointments.sex',
+                'appointments.doctor_id', 'event_specialties.specialty_id')
+            ->get();
+
+        // Free doctors per specialty: arrived today, not left, nobody with them.
+        // As many visitors as free doctors are invited in («تفضل بالدخول»).
+        $busyDoctors = $inside->pluck('doctor_id')->filter()->unique();
+        $freeDoctors = DB::table('doctor_attendances')
+            ->join('days', 'doctor_attendances.day_id', '=', 'days.id')
+            ->join('event_specialties', 'days.event_specialty_id', '=', 'event_specialties.id')
+            ->where('event_specialties.event_id', $event->id)
+            ->whereDate('days.day_date', QueueService::today())
+            ->whereNotNull('doctor_attendances.arrived_at')
+            ->whereNull('doctor_attendances.left_at')
+            ->whereNotIn('doctor_attendances.doctor_id', $busyDoctors)
+            ->select('event_specialties.specialty_id', 'doctor_attendances.doctor_id')
+            ->distinct()
+            ->get()
+            ->countBy('specialty_id');
+
         $grouped = [];
+        $invitedCount = [];
         foreach ($rows as $row) {
             if (count($grouped[$row->specialty_id] ?? []) >= 10) {
                 continue;
+            }
+            // A visitor pushed down (absent when called) is not invited again yet
+            $invited = $row->status !== 'Commingsoon'
+                && ($invitedCount[$row->specialty_id] ?? 0) < ($freeDoctors[$row->specialty_id] ?? 0);
+            if ($invited) {
+                $invitedCount[$row->specialty_id] = ($invitedCount[$row->specialty_id] ?? 0) + 1;
             }
             $grouped[$row->specialty_id][] = [
                 'patient_id' => $row->patient_id,
@@ -487,19 +522,11 @@ class WaitingListController extends Controller
                 'is_priority' => (bool) $row->is_priority,
                 'status' => $row->status,
                 'is_coming_soon' => $row->status === 'Commingsoon',
+                'invited' => $invited,
             ];
         }
 
-        // Just entered (دخل): shown on top of their specialty for CALLING_SECONDS
-        $calling = DB::table('appointments')
-            ->join('event_specialties', 'appointments.event_specialty_id', '=', 'event_specialties.id')
-            ->where('appointments.event_id', $event->id)
-            ->where('appointments.status', 'Entered')
-            ->where('appointments.entered_at', '>=', now()->subSeconds(self::CALLING_SECONDS))
-            ->orderBy('appointments.entered_at')
-            ->select('appointments.patient_id', 'appointments.full_name', 'appointments.sex', 'event_specialties.specialty_id')
-            ->get()
-            ->groupBy('specialty_id')
+        $calling = $inside->groupBy('specialty_id')
             ->map(fn ($rows) => $rows->map(fn ($r) => [
                 'patient_id' => $r->patient_id,
                 'full_name' => $r->full_name,
@@ -518,6 +545,7 @@ class WaitingListController extends Controller
 
         return response()->json([
             'data' => $grouped,
+            // With the doctor (Entered), shown until they pass
             'calling' => $calling,
             'closed_specialties' => $closed,
             'counts' => $counts,

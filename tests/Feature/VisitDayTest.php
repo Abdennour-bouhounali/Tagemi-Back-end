@@ -925,19 +925,38 @@ class VisitDayTest extends TestCase
         Carbon::setTestNow();
     }
 
-    public function test_hall_screen_calls_entered_patient_for_30_seconds(): void
+    public function test_hall_screen_invites_next_patient_shows_inside_until_passed(): void
     {
         [$a] = $this->esIds();
-        $p = $this->patient([[$a, 'today']]);
-        $this->checkIn($p['patient_id']);
-        Carbon::setTestNow(Carbon::now());
-        $this->enter([$p['ids'][0]], $this->doctorFor($a))->assertOk();
+        $specialtyId = DB::table('event_specialties')->where('id', $a)->value('specialty_id');
+        $p1 = $this->patient([[$a, 'today']]);
+        $p2 = $this->patient([[$a, 'today']]);
+        $this->checkIn($p1['patient_id']);
+        $this->checkIn($p2['patient_id']);
+        $doctor = $this->doctorFor($a);
+        $screen = fn () => $this->getJson("/api/public/waitinglist?event_id={$this->eventId}")->assertOk();
+        $invited = fn ($res) => collect($res->json("data.{$specialtyId}"))->where('invited', true)->pluck('patient_id')->all();
+        $inside = fn ($res) => collect($res->json("calling.{$specialtyId}"))->pluck('patient_id')->all();
 
-        $calling = $this->getJson("/api/public/waitinglist?event_id={$this->eventId}")->assertOk()->json('calling');
-        $this->assertSame($p['patient_id'], collect($calling)->flatten(1)->first()['patient_id']);
+        // No doctor yet: nobody invited
+        $this->assertSame([], $invited($screen()));
 
-        Carbon::setTestNow(Carbon::now()->addSeconds(31));
-        $this->assertEmpty($this->getJson("/api/public/waitinglist?event_id={$this->eventId}")->json('calling'));
+        // Doctor free: the first in line is invited («تفضل بالدخول»)
+        $this->arrive($a, $doctor);
+        $this->assertSame([$p1['patient_id']], $invited($screen()));
+
+        // دخل: «عند الطبيب», stays after 30 s; the doctor is busy so nobody else is invited
+        $this->enter([$p1['ids'][0]], $doctor)->assertOk();
+        Carbon::setTestNow(Carbon::now()->addMinutes(5));
+        $res = $screen();
+        $this->assertSame([$p1['patient_id']], $inside($res));
+        $this->assertSame([], $invited($res));
+
+        // إجتاز: gone from the screen; the next one is invited
+        $this->postJson("/api/waitinglist/Complete/{$p1['ids'][0]}")->assertOk();
+        $res = $screen();
+        $this->assertSame([], $inside($res));
+        $this->assertSame([$p2['patient_id']], $invited($res));
         Carbon::setTestNow();
     }
 
