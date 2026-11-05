@@ -22,6 +22,7 @@ class Event extends Model
         'is_archived',
         'is_tawat',
         'is_simulation',
+        'specialty_admins_can_exceed_limit', // specialty officers may book past nbr_of_allowed_specialties
         'special_admin_id',
         'recipient_admin_id',
         'check_admin_id',
@@ -34,6 +35,7 @@ class Event extends Model
         'is_archived' => 'boolean',
         'is_tawat' => 'boolean',
         'is_simulation' => 'boolean',
+        'specialty_admins_can_exceed_limit' => 'boolean',
         'rules_ids' => 'array', // ADD THIS - cast to array
 
     ];

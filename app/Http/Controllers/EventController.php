@@ -1002,6 +1002,7 @@ public function index()
         'is_active' => 'nullable|boolean',
         'is_tawat' => 'nullable|boolean',
         'is_simulation' => 'nullable|boolean',
+        'specialty_admins_can_exceed_limit' => 'nullable|boolean',
         'rules_ids' => 'nullable|array', // ADD THIS
         'rules_ids.*' => 'integer|exists:rules,id', // ADD THIS
         'draft_id' => 'nullable|integer',
@@ -1045,6 +1046,7 @@ public function index()
         'is_active' => $request->is_active ?? true,
         'is_tawat' => $request->is_tawat ?? true,
         'is_simulation' => $request->is_simulation ?? false,
+        'specialty_admins_can_exceed_limit' => $request->boolean('specialty_admins_can_exceed_limit'),
         'is_archived' => false,
         'special_admin_id' => null,
         'recipient_admin_id' => null,
@@ -1174,6 +1176,7 @@ public function index()
         'is_active' => 'nullable|boolean',
         'is_tawat' => 'nullable|boolean',
         'is_simulation' => 'nullable|boolean',
+        'specialty_admins_can_exceed_limit' => 'nullable|boolean',
     ]);
         
         $event->update($validated);
@@ -1218,6 +1221,7 @@ public function updateFull(Request $request, $id, DoctorScheduleService $schedul
         'is_active' => 'nullable|boolean',
         'is_tawat' => 'nullable|boolean',
         'is_simulation' => 'nullable|boolean',
+        'specialty_admins_can_exceed_limit' => 'nullable|boolean',
         'nbr_of_allowed_specialties' => 'nullable|integer|min:1|max:5',
         'rules_ids' => 'nullable|array',
         'rules_ids.*' => 'integer|exists:rules,id',
@@ -1264,6 +1268,9 @@ public function updateFull(Request $request, $id, DoctorScheduleService $schedul
             'is_active' => $request->is_active ?? $event->is_active,
             'is_tawat' => $request->is_tawat ?? $event->is_tawat,
             'is_simulation' => $request->is_simulation ?? $event->is_simulation,
+            'specialty_admins_can_exceed_limit' => $request->has('specialty_admins_can_exceed_limit')
+                ? $request->boolean('specialty_admins_can_exceed_limit')
+                : $event->specialty_admins_can_exceed_limit,
         ]);
 
         if ($request->has('specialties')) {

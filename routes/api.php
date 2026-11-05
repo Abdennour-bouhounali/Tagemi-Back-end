@@ -202,10 +202,15 @@ Route::middleware('auth:sanctum')->group(function () {
             ->middleware('event.access:event,eventId');
     });
 
-    // Special-cases admin
-    Route::middleware('role:super_admin,special_admin')->group(function () {
+    // Delete one specialty of a patient: super admin, special admin, and reception
+    // (reception only before the patient is checked in, and never the last one)
+    Route::middleware('role:super_admin,special_admin,recipient_admin')->group(function () {
         Route::delete('/appointments/{appointment}', [AppointmentController::class, 'destroy'])
             ->middleware('event.access:appointment,appointment');
+    });
+
+    // Special-cases admin
+    Route::middleware('role:super_admin,special_admin')->group(function () {
         Route::post('/appointments/{id}/transfer-specialty', [AppointmentController::class, 'transferSpecialty'])
             ->middleware('event.access:appointment,id');
         Route::post('waitinglist/Special/{id}', [WaitingListController::class, 'Special'])
@@ -217,6 +222,15 @@ Route::middleware('auth:sanctum')->group(function () {
             ->middleware('event.access:event,event_id');
         Route::post('/appointments/add-multiple-different', [AppointmentController::class, 'storeMultipleDifferent'])
             ->middleware('event.access:event,event_id');
+    });
+
+    // Specialty officer: register an existing patient in this specialty (past the
+    // event's specialty limit only when the super admin switched it on for the event)
+    Route::middleware('role:super_admin,check_admin')->group(function () {
+        Route::get('/event-specialties/{id}/register-patient/{patientId}', [AppointmentController::class, 'registerInSpecialtyPreview'])
+            ->whereNumber('id')->whereNumber('patientId')->middleware('event.access:event_specialty,id');
+        Route::post('/event-specialties/{id}/register-patient', [AppointmentController::class, 'registerInSpecialty'])
+            ->whereNumber('id')->middleware('event.access:event_specialty,id');
     });
 
     // Specialty queue (check admin), patient manager and doctors
@@ -236,8 +250,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/appointment/addComment', [AppointmentController::class, 'addComment'])
             ->middleware('event.access:appointment,appointment_id');
     });
-    // Push down (إنزال): the only queue action of the patient manager
-    Route::middleware('role:super_admin,check_admin,patient_manager')->group(function () {
+    // Push down (إنزال): super admin and the patient manager (not the specialty officer since 2026-11-05)
+    Route::middleware('role:super_admin,patient_manager')->group(function () {
         Route::post('waitinglist/Commingsoon/{id}', [WaitingListController::class, 'Commingsoon'])
             ->middleware('event.access:appointment,id');
         Route::post('/waitinglist/push-down', [WaitingListController::class, 'pushDownMany']); // event checked per appointment

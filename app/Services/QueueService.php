@@ -969,7 +969,7 @@ class QueueService
     }
 
     /** Today's day of a specialty and its hour slot closest to now. */
-    private function todaysSlot(EventSpecialty $eventSpecialty): array
+    public function todaysSlot(EventSpecialty $eventSpecialty): array
     {
         $day = Day::where('event_specialty_id', $eventSpecialty->id)
             ->whereDate('day_date', self::today())

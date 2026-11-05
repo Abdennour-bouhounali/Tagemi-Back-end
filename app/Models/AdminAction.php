@@ -24,6 +24,7 @@ class AdminAction extends Model
         'AppointmentController@destroy' => 'حذف موعداً',
         'AppointmentController@reschedule' => 'غيّر وقت موعد',
         'AppointmentController@addSpecialty' => 'أضاف تخصصاً لزائر',
+        'AppointmentController@registerInSpecialty' => 'سجّل زائراً في تخصصه (مسؤول التخصص)',
         'AppointmentController@transferSpecialty' => 'نقل موعداً إلى تخصص آخر',
         'AppointmentController@storeMultiple' => 'أضاف مواعيد',
         'AppointmentController@storeMultipleDifferent' => 'أضاف مواعيد',

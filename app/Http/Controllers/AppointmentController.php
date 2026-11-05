@@ -13,6 +13,7 @@ use App\Models\Event;
 use App\Models\EventSpecialty;
 use App\Models\Day;
 use App\Models\Hour;
+use App\Models\User;
 use Illuminate\Http\Request;
 use App\Services\QueueService;
 use App\Support\VisitStatistics;
@@ -1174,8 +1175,13 @@ private function handleMedicalDocuments(Request $request, $patientId)
     /**
      * Delete appointment
      */
-    public function destroy(Appointment $appointment, QueueService $queues)
+    public function destroy(Request $request, Appointment $appointment, QueueService $queues)
 {
+    // Reception: only before the patient is checked in, and the patient keeps one specialty
+    if ($request->user()->hasRole(User::ROLE_RECIPIENT_ADMIN)) {
+        $this->assertReceptionMayDelete($appointment);
+    }
+
     $appointment->loadMissing(['eventSpecialty.specialty', 'day', 'hour']);
     $details = $this->slotDetails($appointment) + [
         'full_name' => $appointment->full_name,
@@ -1293,56 +1299,167 @@ private function handleMedicalDocuments(Request $request, $patientId)
 
         return DB::transaction(function () use ($data, $id, $queues, $mayExceed) {
             $source = Appointment::with('event')->findOrFail($id);
-            $event = $source->event;
-
-            $booked = Appointment::where('event_id', $source->event_id)
-                ->where('patient_id', $source->patient_id)
-                ->lockForUpdate()
-                ->get();
-            $limit = max(1, (int) ($event->nbr_of_allowed_specialties ?? 1));
-            $beyondLimit = $booked->where('beyond_limit', false)->count() >= $limit;
-            if ($beyondLimit && !$mayExceed) {
-                throw new RuleException("هذا الحدث يسمح بـ {$limit} تخصص لكل زائر، والزائر حاجز العدد كاملاً", 422);
-            }
-            if ($booked->contains('event_specialty_id', (int) $data['event_specialty_id'])) {
-                throw new RuleException('الزائر حاجز هذا التخصص مسبقاً', 422);
-            }
-            if (!EventSpecialty::whereKey($data['event_specialty_id'])->where('event_id', $source->event_id)->exists()) {
-                throw new RuleException('هذا التخصص لا ينتمي لهذا الحدث', 422);
-            }
-            $queues->assertNotBookedUnderOtherNumber($source, (int) $data['event_specialty_id']);
             $hour = $this->slotOf($data['event_specialty_id'], $data['day_id'], $data['hour_id']);
-
-            $appointment = Appointment::create(array_merge($source->only([
-                'user_id', 'event_id', 'full_name', 'birthday', 'state', 'city', 'diseases',
-                'phone', 'phone2', 'sex', 'patient_id', 'medical_documents', 'data_consent_at',
-            ]), [
-                'event_specialty_id' => $data['event_specialty_id'],
-                'day_id' => $data['day_id'],
-                'hour_id' => $hour->id,
-                'doctor_id' => null,
-                'specialty_order' => 0,
-                'status' => 'Pending',
-                'position' => $hour->counter + 1,
-                'orderList' => 0,
-                'is_special' => $booked->contains('is_special', true),
-                'beyond_limit' => $beyondLimit,
-            ]));
-            $hour->increment('counter');
-            $queues->afterSlotChange($appointment);
-
-            $appointment->load(['eventSpecialty.specialty', 'day', 'hour']);
-            AppointmentLog::record('specialty_added', $appointment, $this->slotDetails($appointment) + [
-                'over_capacity' => $hour->counter > $hour->max_allowed,
-                'beyond_limit' => $beyondLimit,
-            ]);
-            $this->checkAndUpdateSaturation($appointment->eventSpecialty);
+            $appointment = $this->bookExtraSpecialty($source, (int) $data['event_specialty_id'], (int) $data['day_id'], $hour, $mayExceed, $queues);
 
             return response()->json([
                 'message' => 'أُضيف تخصص ' . ($appointment->eventSpecialty->specialty->name ?? '') . ' للزائر، ' . $this->slotText($appointment),
                 'appointment' => $appointment->fresh(['eventSpecialty.specialty', 'day', 'hour']),
             ], 201);
         });
+    }
+
+    /**
+     * Specialty officer, before registering a patient in this specialty: who
+     * the patient is, what they hold and whether it is allowed.
+     * GET /api/event-specialties/{id}/register-patient/{patientId}
+     */
+    public function registerInSpecialtyPreview(Request $request, $id, $patientId)
+    {
+        $eventSpecialty = EventSpecialty::with(['specialty', 'event'])->findOrFail($id);
+        $booked = Appointment::with('eventSpecialty.specialty')
+            ->where('event_id', $eventSpecialty->event_id)
+            ->where('patient_id', $patientId)
+            ->get();
+        if ($booked->isEmpty()) {
+            throw new RuleException("لا يوجد زائر بالرقم #{$patientId} في هذا الحدث", 404);
+        }
+
+        $limit = max(1, (int) ($eventSpecialty->event->nbr_of_allowed_specialties ?? 1));
+        $counted = $booked->where('beyond_limit', false)->count();
+        $mayExceed = $this->specialtyOfficerMayExceed($request->user(), $eventSpecialty->event);
+        $already = $booked->contains('event_specialty_id', $eventSpecialty->id);
+        $atLimit = $counted >= $limit;
+
+        $first = $booked->first();
+
+        return response()->json([
+            'patient_id' => (int) $patientId,
+            'full_name' => $first->full_name,
+            'specialties' => $booked->map(fn ($a) => [
+                'name' => $a->eventSpecialty?->specialty?->name,
+                'status' => $a->status,
+                'beyond_limit' => (bool) $a->beyond_limit,
+            ])->values(),
+            'limit' => $limit,
+            'counted' => $counted,
+            'at_limit' => $atLimit,
+            'may_exceed' => $mayExceed,
+            'already_booked' => $already,
+            'allowed' => !$already && (!$atLimit || $mayExceed),
+            'specialty' => $eventSpecialty->specialty->name ?? '',
+        ]);
+    }
+
+    /**
+     * Specialty officer: register a patient who already exists in the event
+     * in this specialty, today (hour of registration). Past the event's limit
+     * only when the super admin switched it on for the event's specialty
+     * officers; the appointment is then marked beyond_limit.
+     * POST /api/event-specialties/{id}/register-patient
+     */
+    public function registerInSpecialty(Request $request, $id, QueueService $queues)
+    {
+        $data = $request->validate(['patient_id' => 'required|integer']);
+        $eventSpecialty = EventSpecialty::with(['specialty', 'event'])->findOrFail($id);
+        $mayExceed = $this->specialtyOfficerMayExceed($request->user(), $eventSpecialty->event);
+
+        return DB::transaction(function () use ($data, $eventSpecialty, $mayExceed, $queues) {
+            $source = Appointment::with('event')
+                ->where('event_id', $eventSpecialty->event_id)
+                ->where('patient_id', $data['patient_id'])
+                ->orderBy('id')
+                ->first();
+            if (!$source) {
+                throw new RuleException("لا يوجد زائر بالرقم #{$data['patient_id']} في هذا الحدث", 404);
+            }
+            [$day, $hour] = $queues->todaysSlot($eventSpecialty);
+            $appointment = $this->bookExtraSpecialty($source, $eventSpecialty->id, $day->id, $hour, $mayExceed, $queues);
+
+            return response()->json([
+                'message' => "سُجّل الزائر #{$source->patient_id} في " . ($eventSpecialty->specialty->name ?? 'التخصص') . '، ' . $this->slotText($appointment),
+                'appointment' => $appointment->fresh(['eventSpecialty.specialty', 'day', 'hour']),
+            ], 201);
+        });
+    }
+
+    /** Super admin always; a specialty officer when the event's switch is on. */
+    private function specialtyOfficerMayExceed(User $user, ?Event $event): bool
+    {
+        return $user->isSuperAdmin() || (bool) ($event?->specialty_admins_can_exceed_limit);
+    }
+
+    /**
+     * One more specialty for an existing patient (presence desk or specialty
+     * officer). Patient data is copied from their appointment. Must run in a
+     * transaction.
+     */
+    private function bookExtraSpecialty(Appointment $source, int $eventSpecialtyId, int $dayId, Hour $hour, bool $mayExceed, QueueService $queues): Appointment
+    {
+        $event = $source->event;
+        $booked = Appointment::where('event_id', $source->event_id)
+            ->where('patient_id', $source->patient_id)
+            ->lockForUpdate()
+            ->get();
+        $limit = max(1, (int) ($event->nbr_of_allowed_specialties ?? 1));
+        $beyondLimit = $booked->where('beyond_limit', false)->count() >= $limit;
+        if ($beyondLimit && !$mayExceed) {
+            throw new RuleException("هذا الحدث يسمح بـ {$limit} تخصص لكل زائر، والزائر حاجز العدد كاملاً", 422);
+        }
+        if ($booked->contains('event_specialty_id', $eventSpecialtyId)) {
+            throw new RuleException('الزائر حاجز هذا التخصص مسبقاً', 422);
+        }
+        if (!EventSpecialty::whereKey($eventSpecialtyId)->where('event_id', $source->event_id)->exists()) {
+            throw new RuleException('هذا التخصص لا ينتمي لهذا الحدث', 422);
+        }
+        $queues->assertNotBookedUnderOtherNumber($source, $eventSpecialtyId);
+
+        $appointment = Appointment::create(array_merge($source->only([
+            'user_id', 'event_id', 'full_name', 'birthday', 'state', 'city', 'diseases',
+            'phone', 'phone2', 'sex', 'patient_id', 'medical_documents', 'data_consent_at',
+        ]), [
+            'event_specialty_id' => $eventSpecialtyId,
+            'day_id' => $dayId,
+            'hour_id' => $hour->id,
+            'doctor_id' => null,
+            'specialty_order' => 0,
+            'status' => 'Pending',
+            'position' => $hour->counter + 1,
+            'orderList' => 0,
+            'is_special' => $booked->contains('is_special', true),
+            'beyond_limit' => $beyondLimit,
+        ]));
+        $hour->increment('counter');
+        $queues->afterSlotChange($appointment);
+
+        $appointment->load(['eventSpecialty.specialty', 'day', 'hour']);
+        AppointmentLog::record('specialty_added', $appointment, $this->slotDetails($appointment) + [
+            'over_capacity' => $hour->counter > $hour->max_allowed,
+            'beyond_limit' => $beyondLimit,
+        ]);
+        $this->checkAndUpdateSaturation($appointment->eventSpecialty);
+
+        return $appointment;
+    }
+
+    /**
+     * Reception deletes a specialty only before the patient is checked in
+     * (every appointment still Pending), and never the patient's last one.
+     *
+     * @throws RuleException
+     */
+    private function assertReceptionMayDelete(Appointment $appointment): void
+    {
+        $all = Appointment::where('event_id', $appointment->event_id)
+            ->where('patient_id', $appointment->patient_id)
+            ->get(['id', 'status']);
+
+        if ($all->contains(fn ($a) => $a->status !== 'Pending')) {
+            throw new RuleException('سُجّل حضور الزائر: الحذف بعد الحضور من صلاحية المشرف العام أو مشرف الحالات الخاصة', 403);
+        }
+        if ($all->count() <= 1) {
+            throw new RuleException('هذا آخر تخصص للزائر، لا يحذفه مسؤول الاستقبال', 403);
+        }
     }
 
     /**

@@ -364,7 +364,6 @@ class AuthorizationTest extends TestCase
                 ['GET', "/api/events/{$a['eventId']}"],
                 ['GET', "/api/waitinglist/GetWaitingListBySpeciality/{$a['eventId']}/1"],
                 ['GET', "/api/appointment/patient-appointments/{$a['patientId']}/{$a['eventId']}"],
-                ['POST', "/api/waitinglist/Commingsoon/{$a['appointmentId']}", ['position' => 1]],
                 ['POST', '/api/appointment/addComment', ['appointment_id' => $a['appointmentId'], 'comment' => 'ok']],
             ],
             User::ROLE_DOCTOR => [ // CheckPaitent (read + comments)

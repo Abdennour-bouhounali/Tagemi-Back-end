@@ -889,6 +889,8 @@ class VisitDayTest extends TestCase
 
     public function test_doctor_visits_numbers_alarm_and_idle(): void
     {
+        // The test moves the clock 75 minutes on: start at 10:00 so it never crosses midnight
+        Carbon::setTestNow(Carbon::now(QueueService::TIMEZONE)->setTime(10, 0));
         [$a] = $this->esIds();
         $patients = [];
         foreach (range(1, 3) as $i) {

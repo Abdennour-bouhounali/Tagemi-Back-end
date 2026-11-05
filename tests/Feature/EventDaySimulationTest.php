@@ -451,7 +451,7 @@ class EventDaySimulationTest extends TestCase
                 case 'push':
                     $a = $pick($this->queueIds($es));
                     if ($a) {
-                        $this->as($pick(['officer', 'manager']), 'POST', "/api/waitinglist/Commingsoon/{$a}", ['places' => mt_rand(1, 8)])->assertOk();
+                        $this->as('manager', 'POST', "/api/waitinglist/Commingsoon/{$a}", ['places' => mt_rand(1, 8)])->assertOk();
                     }
                     break;
                 case 'pushmany':
@@ -585,7 +585,8 @@ class EventDaySimulationTest extends TestCase
         // [method, uri, body, roles allowed]
         $cases = [
             ['POST', "/api/events/{$this->eventId}/check-in", ['patient_id' => 1], ['super', 'special', 'reception']],
-            ['POST', "/api/waitinglist/Commingsoon/{$a}", [], ['super', 'officer', 'manager']],
+            ['POST', "/api/waitinglist/Commingsoon/{$a}", [], ['super', 'manager']],
+            ['POST', '/api/waitinglist/push-down', ['appointment_ids' => [$a]], ['super', 'manager']],
             ['POST', '/api/waitinglist/enter', ['ids' => [$a], 'doctor_id' => $doctor], ['super', 'officer']],
             ['POST', "/api/waitinglist/Special/{$a}", [], ['super', 'special']],
             ['POST', "/api/waitinglist/move-to-front/{$a}", [], ['super', 'special']],
@@ -932,5 +933,69 @@ class EventDaySimulationTest extends TestCase
         $this->assertInvariants('after referral above the limit');
         $this->drain();
         $this->assertSame(3, Appointment::where('patient_id', $p['patient_id'])->where('status', 'Completed')->count());
+    }
+
+    /** Reception deletes extra specialties (after a merge) only before check-in, never the last one. */
+    public function test_reception_deletes_specialties_only_before_check_in(): void
+    {
+        [$eyes, $heart, $teeth] = [$this->esNamed('Eyes'), $this->esNamed('Heart'), $this->esNamed('Teeth')];
+        $this->arrive($this->doctors[$eyes][0], $eyes);
+        // Merged patient holding 3 specialties, the event allows 2
+        $p = $this->patient([[$eyes, 'today'], [$heart, 'today'], [$teeth, 'today']]);
+        $this->checkIn($p['patient_id'])->assertStatus(422);
+
+        $this->as('reception', 'DELETE', "/api/appointments/{$p['ids'][2]}")->assertOk();
+        $this->assertNull(Appointment::find($p['ids'][2]));
+        $this->checkIn($p['patient_id'])->assertOk();
+
+        // Checked in: reception may no longer delete
+        $this->as('reception', 'DELETE', "/api/appointments/{$p['ids'][1]}")->assertForbidden();
+        $this->assertNotNull(Appointment::find($p['ids'][1]));
+
+        // Never the patient's only specialty
+        $single = $this->patient([[$heart, 'tomorrow']]);
+        $this->as('reception', 'DELETE', "/api/appointments/{$single['ids'][0]}")->assertForbidden();
+        $this->assertInvariants('after reception deletes');
+    }
+
+    /** Specialty officer registers an existing patient in a specialty; past the limit only with the event switch. */
+    public function test_specialty_officer_registers_existing_patient_past_limit_when_switched_on(): void
+    {
+        [$eyes, $heart, $teeth] = [$this->esNamed('Eyes'), $this->esNamed('Heart'), $this->esNamed('Teeth')];
+        foreach ([$eyes, $heart, $teeth] as $es) {
+            $this->arrive($this->doctors[$es][0], $es);
+        }
+
+        // Within the limit (1 of 2): always allowed, not marked beyond_limit
+        $one = $this->patient([[$eyes, 'today']]);
+        $this->checkIn($one['patient_id'])->assertOk();
+        $this->as('officer', 'GET', "/api/event-specialties/{$heart}/register-patient/{$one['patient_id']}")
+            ->assertOk()->assertJsonPath('allowed', true)->assertJsonPath('at_limit', false);
+        $this->as('officer', 'POST', "/api/event-specialties/{$heart}/register-patient", ['patient_id' => $one['patient_id']])
+            ->assertCreated()->assertJsonPath('appointment.beyond_limit', false);
+        $this->as('officer', 'POST', "/api/event-specialties/{$heart}/register-patient", ['patient_id' => $one['patient_id']])->assertStatus(422);
+
+        // At the limit (2 of 2): refused while the switch is off
+        $two = $this->patient([[$eyes, 'today'], [$heart, 'today']]);
+        $this->checkIn($two['patient_id'])->assertOk();
+        $this->as('officer', 'GET', "/api/event-specialties/{$teeth}/register-patient/{$two['patient_id']}")
+            ->assertOk()->assertJsonPath('allowed', false)->assertJsonPath('may_exceed', false);
+        $this->as('officer', 'POST', "/api/event-specialties/{$teeth}/register-patient", ['patient_id' => $two['patient_id']])->assertStatus(422);
+
+        // Super admin switches it on for the event's specialty officers
+        DB::table('events')->where('id', $this->eventId)->update(['specialty_admins_can_exceed_limit' => true]);
+        $res = $this->as('officer', 'POST', "/api/event-specialties/{$teeth}/register-patient", ['patient_id' => $two['patient_id']])
+            ->assertCreated()->assertJsonPath('appointment.beyond_limit', true);
+        $new = Appointment::find($res->json('appointment.id'));
+        $this->assertSame(3, Appointment::where('patient_id', $two['patient_id'])->count());
+        $this->assertNotSame('Pending', $new->status); // checked in today: joins the patient's day
+        $this->assertSame(1, DB::table('appointment_logs')->where('appointment_id', $new->id)->where('action', 'specialty_added')->count());
+
+        // Other roles can't use it; unknown number is a clean 404
+        foreach (['reception', 'manager', 'organizer', 'special'] as $who) {
+            $this->as($who, 'POST', "/api/event-specialties/{$teeth}/register-patient", ['patient_id' => $one['patient_id']])->assertForbidden();
+        }
+        $this->as('officer', 'POST', "/api/event-specialties/{$teeth}/register-patient", ['patient_id' => 999999])->assertNotFound();
+        $this->assertInvariants('after officer registrations');
     }
 }
