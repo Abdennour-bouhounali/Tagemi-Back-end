@@ -52,6 +52,8 @@ class DoctorController extends Controller
             $password = $this->generatePassword();
             $user = User::create([
                 'name' => $doctor->full_name,
+                'first_name' => $doctor->first_name,
+                'family_name' => $doctor->family_name,
                 'email' => $this->loginEmail($doctor),
                 'password' => $password,
                 'phone' => $doctor->phone,
@@ -106,7 +108,12 @@ class DoctorController extends Controller
 
         DB::transaction(function () use ($doctor, $data) {
             $doctor->update($data);
-            $doctor->user?->update(['name' => $doctor->full_name, 'phone' => $doctor->phone]);
+            $doctor->user?->update([
+                'name' => $doctor->full_name,
+                'first_name' => $doctor->first_name,
+                'family_name' => $doctor->family_name,
+                'phone' => $doctor->phone,
+            ]);
         });
 
         return [
@@ -141,6 +148,8 @@ class DoctorController extends Controller
                 // Account deleted from the users page: create it again
                 $user = User::create([
                     'name' => $doctor->full_name,
+                    'first_name' => $doctor->first_name,
+                    'family_name' => $doctor->family_name,
                     'email' => $this->loginEmail($doctor),
                     'password' => $password,
                     'phone' => $doctor->phone,

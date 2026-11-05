@@ -124,6 +124,8 @@ Route::middleware('auth:sanctum')->group(function () {
         return $user;
     });
     Route::post('/logout', [AuthController::class, 'logout']);
+    // Own Arabic first + family name; the organizer (read-only) may set it too
+    Route::put('/user/name', [AuthController::class, 'updateName']);
     Route::get('/getdisplayAuth', [UserController::class, 'getdisplayAuth']);
     Route::get('/getCurrentTime', [UsefulController::class, 'getCurrentTime']);
     Route::get('/getstartDay', [UsefulController::class, 'getstartDay']);

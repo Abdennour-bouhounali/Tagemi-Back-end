@@ -960,6 +960,25 @@ class VisitDayTest extends TestCase
         Carbon::setTestNow();
     }
 
+    public function test_hall_screen_lists_as_many_rows_as_asked(): void
+    {
+        [$a] = $this->esIds();
+        $specialtyId = DB::table('event_specialties')->where('id', $a)->value('specialty_id');
+        foreach (range(1, 3) as $i) {
+            $this->checkIn($this->patient([[$a, 'today']])['patient_id']);
+        }
+        $url = "/api/public/waitinglist?event_id={$this->eventId}";
+
+        $res = $this->getJson("{$url}&limit=2")->assertOk();
+        $this->assertCount(2, $res->json("data.{$specialtyId}"));
+        $this->assertSame(3, $res->json("counts.{$specialtyId}"));
+
+        // Default 10; out-of-range values are clamped (1..50)
+        $this->assertCount(3, $this->getJson($url)->json("data.{$specialtyId}"));
+        $this->assertCount(1, $this->getJson("{$url}&limit=0")->json("data.{$specialtyId}"));
+        $this->assertCount(3, $this->getJson("{$url}&limit=999")->json("data.{$specialtyId}"));
+    }
+
     public function test_organizer_sees_everything_and_changes_nothing(): void
     {
         [$a] = $this->esIds();

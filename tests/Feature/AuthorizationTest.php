@@ -75,7 +75,7 @@ class AuthorizationTest extends TestCase
     public function test_registration_cannot_choose_a_role(): void
     {
         $this->postJson('/api/register', [
-            'name' => 'attacker', 'email' => 'attacker@test.local', 'password' => 'password123', 'role_id' => 1,
+            'first_name' => 'محمد', 'family_name' => 'بن علي', 'email' => 'attacker@test.local', 'password' => 'password123', 'role_id' => 1,
         ])->assertCreated();
 
         $this->assertSame(User::ROLE_SIMPLE_USER, (int) User::where('email', 'attacker@test.local')->value('role_id'));

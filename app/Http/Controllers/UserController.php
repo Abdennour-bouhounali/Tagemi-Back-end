@@ -64,7 +64,7 @@ public function index()
         try {
             $users = User::where('role_id', $roleId)
                 ->with(['role', 'event'])
-                ->select('id', 'name', 'email', 'phone', 'role_id', 'event_id')
+                ->select('id', 'name', 'first_name', 'family_name', 'email', 'phone', 'role_id', 'event_id')
                 ->get();
 
             return response()->json([
@@ -92,7 +92,7 @@ public function index()
         try {
             $users = User::where('role_id', $roleId)
                 ->with(['role', 'event'])
-                ->select('id', 'name', 'email', 'phone', 'role_id', 'event_id')
+                ->select('id', 'name', 'first_name', 'family_name', 'email', 'phone', 'role_id', 'event_id')
                 ->get();
 
             return response()->json([
@@ -205,7 +205,7 @@ public function index()
      */
     public function update(Request $request, $userId)
     {
-        $validator = Validator::make($request->all(), [
+        $validator = Validator::make($request->all(), User::nameRules(false) + [
             'name' => 'sometimes|string|max:255',
             'email' => 'sometimes|email|unique:users,email,' . $userId,
             'phone' => 'sometimes|nullable|string|max:20',
@@ -215,7 +215,7 @@ public function index()
             'email.email' => 'البريد الإلكتروني غير صالح',
             'email.unique' => 'البريد الإلكتروني مستخدم بالفعل',
             'password.min' => 'كلمة المرور يجب أن تكون 6 أحرف على الأقل',
-        ]);
+        ] + User::NAME_MESSAGES);
 
         if ($validator->fails()) {
             return response()->json([
@@ -229,7 +229,14 @@ public function index()
             
             $updateData = [];
             
-            if ($request->has('name')) {
+            if ($request->filled('first_name') || $request->filled('family_name')) {
+                // Both parts in Arabic; the joined name follows
+                $user->setArabicName(
+                    $request->input('first_name', $user->first_name ?? ''),
+                    $request->input('family_name', $user->family_name ?? '')
+                );
+                $user->doctor?->update(['first_name' => $user->first_name, 'family_name' => $user->family_name]);
+            } elseif ($request->has('name')) {
                 $updateData['name'] = $request->name;
             }
             
@@ -516,7 +523,7 @@ public function index()
         try {
             $users = User::where('event_id', $eventId)
                 ->with(['role'])
-                ->select('id', 'name', 'email', 'phone', 'role_id', 'event_id')
+                ->select('id', 'name', 'first_name', 'family_name', 'email', 'phone', 'role_id', 'event_id')
                 ->get();
 
             return response()->json([

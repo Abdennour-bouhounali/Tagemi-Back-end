@@ -25,6 +25,9 @@ use Illuminate\Support\Facades\Log;
 class WaitingListController extends Controller
 {
 
+    private const PUBLIC_LIST_DEFAULT = 10;
+    private const PUBLIC_LIST_MAX = 50;
+
     public function __construct(private QueueService $queues, private DoctorVisitStats $visitStats)
     {
     }
@@ -444,11 +447,13 @@ class WaitingListController extends Controller
     }
 
     /**
-     * Public waiting-room screen: first 10 per specialty, today only.
+     * Public waiting-room screen: first N per specialty (?limit=, default 10), today only.
      */
     public function getPublicWaitingList(Request $request)
     {
         $eventId = $request->query('event_id');
+        // Rows per specialty chosen on the hall screen's settings (1-50)
+        $limit = min(self::PUBLIC_LIST_MAX, max(1, (int) $request->query('limit', self::PUBLIC_LIST_DEFAULT)));
         // Public screen: never expose archived events
         $event = $eventId ? Event::where('is_archived', false)->find($eventId) : null;
 
@@ -470,7 +475,7 @@ class WaitingListController extends Controller
                 'appointments.is_priority', 'specialties.id as specialty_id')
             ->get();
 
-        // Whole queue length per specialty (the screen lists only the first 10)
+        // Whole queue length per specialty (the screen lists only the first N)
         $counts = $rows->countBy('specialty_id');
 
         // With the doctor now (دخل): «عند الطبيب» on top of their specialty until «إجتاز»
@@ -505,7 +510,7 @@ class WaitingListController extends Controller
         $grouped = [];
         $invitedCount = [];
         foreach ($rows as $row) {
-            if (count($grouped[$row->specialty_id] ?? []) >= 10) {
+            if (count($grouped[$row->specialty_id] ?? []) >= $limit) {
                 continue;
             }
             // A visitor pushed down (absent when called) is not invited again yet

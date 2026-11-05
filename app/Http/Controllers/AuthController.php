@@ -11,20 +11,21 @@ class AuthController extends Controller
     public function register(Request $request){
      // Validate the request data. role_id is intentionally not accepted:
      // self-registered accounts are always SimpleUser, roles are granted by a super admin.
-     $validatedData = $request->validate([
-        'name' => 'required|string|max:255',
+     // First and family name, both in Arabic; `name` is their joined form
+     $validatedData = $request->validate(User::nameRules() + [
         'email' => 'required|string|email|max:255|unique:users,email',
         'password' => 'required|string|min:8',
         'phone' => 'nullable|string|max:20',
-    ]);
+    ], User::NAME_MESSAGES);
 
     // Store the user data
-    $user = User::create([
-        'name' => $validatedData['name'],
+    $user = (new User)->setArabicName($validatedData['first_name'], $validatedData['family_name']);
+    $user->fill([
         'email' => $validatedData['email'],
         'password' => $validatedData['password'], // hashed by the model cast
         'phone' => $validatedData['phone'] ?? null,
     ]);
+    $user->save();
     $user->forceFill(['role_id' => User::ROLE_SIMPLE_USER])->save();
 
      // Generate an API token
@@ -72,6 +73,21 @@ class AuthController extends Controller
 
     }
 
+
+    /**
+     * The signed-in account sets its own Arabic first and family name (asked
+     * by the app while needs_name_update is true). A doctor's registry entry follows.
+     */
+    public function updateName(Request $request)
+    {
+        $data = $request->validate(User::nameRules(), User::NAME_MESSAGES);
+
+        $user = $request->user();
+        $user->setArabicName($data['first_name'], $data['family_name'])->save();
+        $user->doctor?->update(['first_name' => $user->first_name, 'family_name' => $user->family_name]);
+
+        return ['message' => 'حُفظ الاسم', 'user' => $user->only(['id', 'name', 'first_name', 'family_name', 'needs_name_update'])];
+    }
 
     public function logout(Request $request){
 
