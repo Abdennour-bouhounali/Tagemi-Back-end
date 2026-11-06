@@ -526,7 +526,7 @@ class QueueService
                 $here && $place !== false => null,
                 $here && $here->status === 'Completed' => 'أنهى هذا التخصص',
                 $here && $here->status === 'Entered' => 'عند الطبيب الآن',
-                $rows->every(fn ($a) => $a->status === 'Pending') => 'لم يصل بعد',
+                $this->awaitsReception($rows) => 'لم يصل بعد',
                 $active && $active->event_specialty_id !== $appointment->event_specialty_id
                     => 'في تخصص آخر: ' . ($active->eventSpecialty?->specialty?->name ?? ''),
                 $here && in_array($here->status, self::DILATATION_STATUSES, true) => 'في التمدد',
@@ -649,7 +649,10 @@ class QueueService
             }
 
             $todays = $this->todaysAppointments($appointment->event_id, $appointment->patient_id);
-            $notCheckedIn = $todays->every(fn ($a) => $a->status === 'Pending');
+            if ($appointment->status === 'Completed') {
+                throw new RuleException('تم فحص الزائر في هذا التخصص مسبقاً', 422);
+            }
+            $notCheckedIn = $this->awaitsReception($todays);
             if (!$notCheckedIn && !$this->isOpen($appointment->event_specialty_id)) {
                 throw new RuleException('هذا التخصص غير مفتوح اليوم، اختر تخصصاً مفتوحاً', 409);
             }
@@ -663,9 +666,6 @@ class QueueService
                     ?? $appointment->fresh();
             }
 
-            if ($appointment->status === 'Completed') {
-                throw new RuleException('تم فحص الزائر في هذا التخصص مسبقاً', 422);
-            }
             if ($todays->contains(fn ($a) => $a->status === 'Entered')) {
                 throw new RuleException('الزائر عند الطبيب حالياً، اضغط إجتاز أولاً', 422);
             }
@@ -715,8 +715,8 @@ class QueueService
                 throw new RuleException('الزائر في التمدد حالياً، أنهِ التمدد أولاً', 422);
             }
 
-            if ($todays->every(fn ($a) => $a->status === 'Pending')) {
-                Appointment::whereIn('id', $todays->pluck('id'))->update(['checked_in_at' => now()]);
+            if ($this->awaitsReception($todays)) {
+                Appointment::whereIn('id', $todays->where('status', 'Pending')->pluck('id'))->update(['checked_in_at' => now()]);
             }
             foreach ($todays as $other) {
                 if ($other->id !== $appointment->id && in_array($other->status, ['Pending', ...self::QUEUE_STATUSES], true)) {

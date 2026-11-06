@@ -1396,6 +1396,35 @@ class EventDaySimulationTest extends TestCase
         $this->assertInvariants('exam undone while absent');
     }
 
+    /** «حالة خاصة» and «قدّمه» admit an absent patient whole: no appointment stays Pending beside a queue. */
+    public function test_special_case_and_move_up_admit_an_absent_patient_whole(): void
+    {
+        $eyes = $this->esNamed('Eyes');
+        $teeth = $this->esNamed('Teeth');
+        $skin = $this->esNamed('Skin');
+        foreach ([$eyes, $teeth, $skin] as $es) {
+            $this->arrive($this->doctors[$es][0], $es);
+        }
+        DB::table('events')->where('id', $this->eventId)->update(['nbr_of_allowed_specialties' => 3]);
+
+        foreach (['Special', 'move-to-front'] as $action) {
+            $p = $this->patient([[$eyes, 'today'], [$teeth, 'today'], [$skin, 'today']]);
+            $this->checkIn($p['patient_id'])->assertOk();
+            $first = Appointment::whereIn('id', $p['ids'])->where('status', 'Present')->first();
+            $this->passed($p, $first->id, $this->doctors[$first->event_specialty_id][0]);
+            $active = Appointment::whereIn('id', $p['ids'])->where('status', 'Present')->first();
+            $this->as('officer', 'POST', "/api/waitinglist/absent/{$active->id}")->assertOk();
+
+            $this->as('special', 'POST', "/api/waitinglist/{$action}/{$first->id}")->assertStatus(422); // already finished
+            $this->assertSame('Pending', $active->fresh()->status);
+
+            $this->as('special', 'POST', "/api/waitinglist/{$action}/{$active->id}")->assertOk();
+            $this->assertSame('Present', $active->fresh()->status);
+            $this->assertSame('Completed', $first->fresh()->status);
+            $this->assertInvariants("{$action} after absent");
+        }
+    }
+
     /** A referral can put the patient past the limit: that must not lock them out on their return. */
     public function test_absent_after_a_referral_past_the_limit_can_check_in_again(): void
     {
