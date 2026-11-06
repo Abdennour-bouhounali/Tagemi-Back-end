@@ -20,6 +20,7 @@ class AdminAction extends Model
         // Presence desk / appointments
         'AppointmentController@checkInByNumber' => 'سجّل حضور زائر',
         'AppointmentController@updatePresence' => 'سجّل حضور زائر',
+        'AppointmentController@undoCheckIn' => 'ألغى حضور زائر',
         'AppointmentController@update' => 'عدّل بيانات موعد',
         'AppointmentController@destroy' => 'حذف موعداً',
         'AppointmentController@reschedule' => 'غيّر وقت موعد',

@@ -177,6 +177,8 @@ Route::middleware('auth:sanctum')->group(function () {
             ->middleware('event.access:appointment,id');
         Route::post('/events/{eventId}/check-in', [AppointmentController::class, 'checkInByNumber'])
             ->middleware('event.access:event,eventId');
+        Route::post('/events/{eventId}/check-in/undo', [AppointmentController::class, 'undoCheckIn'])
+            ->whereNumber('eventId')->middleware('event.access:event,eventId');
         // Same name + phone registered twice: propose and merge into one patient number
         Route::get('/events/{eventId}/duplicates', [PatientMergeController::class, 'eventDuplicates'])
             ->whereNumber('eventId')->middleware('event.access:event,eventId');

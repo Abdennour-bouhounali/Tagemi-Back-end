@@ -59,6 +59,18 @@ public function checkInByNumber(Request $request, $eventId)
     return $this->checkInResponse($first, (int) $data['patient_id']);
 }
 
+/**
+ * «لم يأت بعد»: undo a check-in made by mistake.
+ */
+public function undoCheckIn(Request $request, $eventId)
+{
+    $data = $request->validate(['patient_id' => 'required|integer|min:1']);
+    app(QueueService::class)->undoCheckIn((int) $eventId, (int) $data['patient_id']);
+    Log::info('Check-in undone', ['patient_id' => $data['patient_id'], 'by' => Auth::id()]);
+
+    return response()->json(['message' => 'الزائر #' . $data['patient_id'] . ' لم يأت بعد: أُلغي حضوره وخرج من الطابور']);
+}
+
 private function checkInResponse(?Appointment $first, int $patientId)
 {
     if (!$first) {

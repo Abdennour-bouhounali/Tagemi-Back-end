@@ -151,6 +151,57 @@ class QueueService
         });
     }
 
+    /**
+     * «لم يأت بعد»: reception checked this patient in by mistake. All of today's
+     * appointments go back to booked and the patient leaves the queue; when they
+     * really arrive, a normal check-in puts them last. The special-case mark stays.
+     * Refused once the visit started (doctor, dilatation, a specialty done, sent on
+     * by an officer): the patient was there, so it was no mistake.
+     *
+     * @throws RuleException
+     */
+    public function undoCheckIn(int $eventId, int $patientId): void
+    {
+        DB::transaction(function () use ($eventId, $patientId) {
+            // Queue before the patient's rows, as enter() does: «دخل» at the same moment must not deadlock
+            $queuedIn = self::scopeToday(Appointment::query())
+                ->where('event_id', $eventId)
+                ->where('patient_id', $patientId)
+                ->whereIn('status', self::QUEUE_STATUSES)
+                ->value('event_specialty_id');
+            if ($queuedIn) {
+                $this->lockQueue($queuedIn);
+            }
+
+            $todays = $this->todaysAppointments($eventId, $patientId);
+
+            if ($todays->isEmpty()) {
+                $this->failNoAppointmentToday($eventId, $patientId);
+            }
+            if ($todays->every(fn ($a) => $a->status === 'Pending')) {
+                throw new RuleException('الزائر لم يُسجَّل حضوره اليوم', 409);
+            }
+            if ($todays->contains(fn ($a) => $a->status === 'Entered')) {
+                throw new RuleException('الزائر عند الطبيب حالياً، لا يمكن إلغاء حضوره', 422);
+            }
+            if ($todays->contains(fn ($a) => $a->status === 'Completed')) {
+                throw new RuleException('أنهى الزائر فحصاً اليوم، لا يمكن إلغاء حضوره', 422);
+            }
+            if ($todays->contains(fn ($a) => $a->dilatation_sent_at !== null)) {
+                throw new RuleException('مرّ الزائر بقاعة التمدد، لا يمكن إلغاء حضوره', 422);
+            }
+            // refer() is the only way to be active without an arrival time
+            if ($todays->contains(fn ($a) => $a->status !== 'Pending' && $a->checked_in_at === null)) {
+                throw new RuleException('وجّهه مسؤول التخصص إلى تخصص آخر، لا يمكن إلغاء حضوره', 422);
+            }
+
+            foreach ($todays as $appointment) {
+                $appointment->checked_in_at = null;
+                $this->leaveQueue($appointment, 'Pending');
+            }
+        });
+    }
+
     // ------------------------------------------------- specialty officer
 
     /**

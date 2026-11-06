@@ -181,6 +181,157 @@ class VisitDayTest extends TestCase
         $this->checkIn(999999)->assertNotFound();
     }
 
+    private function undoCheckIn(int $patientId)
+    {
+        return $this->postJson("/api/events/{$this->eventId}/check-in/undo", ['patient_id' => $patientId]);
+    }
+
+    public function test_undo_check_in_leaves_queue_and_a_new_check_in_goes_last(): void
+    {
+        [$a, $b, $c] = $this->esIds();
+        // The other specialty is busier, so the patient goes to $a both times
+        $this->checkIn($this->patient([[$b, 'today']])['patient_id']);
+        $this->checkIn($this->patient([[$b, 'today']])['patient_id']);
+        $first = $this->patient([[$a, 'today']]);
+        $mistake = $this->patient([[$a, 'today'], [$b, 'today'], [$c, 'tomorrow']]);
+        $last = $this->patient([[$a, 'today']]);
+        foreach ([$first, $mistake, $last] as $p) {
+            $this->checkIn($p['patient_id'])->assertOk();
+        }
+        $this->assertSame([$first['patient_id'], $mistake['patient_id'], $last['patient_id']], $this->queue($a));
+
+        $this->undoCheckIn($mistake['patient_id'])->assertOk();
+
+        // Every appointment of today is booked again, the gap in the queue is closed
+        foreach ($mistake['ids'] as $id) {
+            $appointment = Appointment::find($id);
+            $this->assertSame('Pending', $appointment->status);
+            $this->assertNull($appointment->checked_in_at);
+            $this->assertSame(0, (int) $appointment->orderList);
+        }
+        $this->assertSame([$first['patient_id'], $last['patient_id']], $this->queue($a));
+        $this->assertSame([1, 2], app(QueueService::class)->queue($a)->pluck('orderList')->map(fn ($o) => (int) $o)->all());
+
+        // The history says who did it
+        $this->assertDatabaseHas('appointment_logs', ['appointment_id' => $mistake['ids'][0], 'action' => 'status_changed']);
+        $log = \App\Models\AppointmentLog::where('appointment_id', $mistake['ids'][0])->latest('id')->first();
+        $this->assertSame('Pending', $log->details['to']);
+        $this->assertSame('ألغى حضور زائر', $log->details['via']);
+
+        // They really arrive later: a normal check-in, at the end of the queue
+        $this->checkIn($mistake['patient_id'])->assertOk();
+        $this->assertSame([$first['patient_id'], $last['patient_id'], $mistake['patient_id']], $this->queue($a));
+    }
+
+    public function test_undo_check_in_with_no_open_specialty(): void
+    {
+        [$a] = $this->esIds();
+        $this->close(...$this->esIds());
+        $p = $this->patient([[$a, 'today']]);
+        $this->checkIn($p['patient_id'])->assertOk();
+        $this->assertSame('Waiting', $this->statusOf($p['ids'][0]));
+
+        $this->undoCheckIn($p['patient_id'])->assertOk();
+        $this->assertSame('Pending', $this->statusOf($p['ids'][0]));
+    }
+
+    public function test_undo_check_in_of_a_pushed_down_patient(): void
+    {
+        [$a] = $this->esIds();
+        $p = $this->patient([[$a, 'today']]);
+        $other = $this->patient([[$a, 'today']]);
+        $this->checkIn($p['patient_id']);
+        $this->checkIn($other['patient_id']);
+        Appointment::whereKey($p['ids'][0])->update(['status' => 'Commingsoon']);
+
+        $this->undoCheckIn($p['patient_id'])->assertOk();
+        $this->assertSame('Pending', $this->statusOf($p['ids'][0]));
+        $this->assertSame([$other['patient_id']], $this->queue($a));
+    }
+
+    public function test_undo_check_in_keeps_the_special_case_mark(): void
+    {
+        [$a] = $this->esIds();
+        $normal = $this->patient([[$a, 'today']]);
+        $this->checkIn($normal['patient_id']);
+        $p = $this->patient([[$a, 'today']]);
+        $this->postJson("/api/waitinglist/Special/{$p['ids'][0]}")->assertOk();
+
+        $this->undoCheckIn($p['patient_id'])->assertOk();
+        $this->assertFalse((bool) Appointment::find($p['ids'][0])->is_priority);
+
+        // Still a special case: priority again when they really arrive
+        $this->checkIn($p['patient_id'])->assertOk();
+        $this->assertSame([$p['patient_id'], $normal['patient_id']], $this->queue($a));
+    }
+
+    public function test_undo_check_in_refused_once_the_visit_started(): void
+    {
+        [$a, $b] = $this->esIds();
+
+        // Not checked in at all, or no appointment today
+        $pending = $this->patient([[$a, 'today']]);
+        $this->undoCheckIn($pending['patient_id'])->assertStatus(409);
+        $tomorrow = $this->patient([[$a, 'tomorrow']]);
+        $this->undoCheckIn($tomorrow['patient_id'])->assertStatus(422);
+
+        // With a doctor
+        $p = $this->patient([[$a, 'today'], [$b, 'today']]);
+        $this->checkIn($p['patient_id']);
+        $doctor = $this->doctorFor($a);
+        $this->markArrived($doctor, $a);
+        $this->postJson('/api/waitinglist/enter', ['ids' => [$p['ids'][0]], 'doctor_id' => $doctor->id])->assertOk();
+        $this->undoCheckIn($p['patient_id'])->assertStatus(422);
+        $this->assertSame('Entered', $this->statusOf($p['ids'][0]));
+
+        // Done with one specialty, queued in the next
+        $this->postJson("/api/waitinglist/Complete/{$p['ids'][0]}")->assertOk();
+        $this->undoCheckIn($p['patient_id'])->assertStatus(422);
+        $this->assertSame('Completed', $this->statusOf($p['ids'][0]));
+        $this->assertSame('Present', $this->statusOf($p['ids'][1]));
+
+        // Back from dilatation: Present again, but they were there
+        $d = $this->patient([[$a, 'today']]);
+        $this->checkIn($d['patient_id']);
+        DB::table('event_specialties')->where('id', $a)->update(['has_dilatation' => true]);
+        $queues = app(QueueService::class);
+        $queues->sendToDilatation(Appointment::find($d['ids'][0]));
+        $this->undoCheckIn($d['patient_id'])->assertStatus(422);
+        $queues->finishDilatation(Appointment::find($d['ids'][0]));
+        $this->undoCheckIn($d['patient_id'])->assertStatus(422);
+        $this->assertSame('Present', $this->statusOf($d['ids'][0]));
+
+        // Sent on by an officer to a specialty they never booked
+        $r = $this->patient([[$a, 'today']]);
+        $this->checkIn($r['patient_id']);
+        $target = \App\Models\EventSpecialty::find($b);
+        $queues->refer(Appointment::find($r['ids'][0]), $target);
+        $this->undoCheckIn($r['patient_id'])->assertStatus(422);
+        $this->assertSame('Waiting', $this->statusOf($r['ids'][0]));
+    }
+
+    public function test_undo_check_in_is_for_the_presence_desk_of_this_event(): void
+    {
+        [$a] = $this->esIds();
+        $p = $this->patient([[$a, 'today']]);
+        $this->checkIn($p['patient_id']);
+
+        foreach ([User::ROLE_CHECK_ADMIN, User::ROLE_DOCTOR, User::ROLE_PATIENT_MANAGER, User::ROLE_ORGANIZER] as $role) {
+            Sanctum::actingAs($this->staff($role));
+            $this->undoCheckIn($p['patient_id'])->assertForbidden();
+        }
+
+        $otherEvent = $this->staff(User::ROLE_RECIPIENT_ADMIN);
+        $otherEvent->forceFill(['event_id' => DB::table('events')->insertGetId(['name' => 'Other', 'date' => QueueService::today(), 'is_active' => 1, 'is_archived' => 0])])->save();
+        Sanctum::actingAs($otherEvent);
+        $this->undoCheckIn($p['patient_id'])->assertForbidden();
+        $this->assertSame('Present', $this->statusOf($p['ids'][0]));
+
+        Sanctum::actingAs($this->staff(User::ROLE_RECIPIENT_ADMIN));
+        $this->undoCheckIn($p['patient_id'])->assertOk();
+        $this->assertSame('Pending', $this->statusOf($p['ids'][0]));
+    }
+
     public function test_reception_can_check_in_by_typed_number(): void
     {
         [$a] = $this->esIds();
