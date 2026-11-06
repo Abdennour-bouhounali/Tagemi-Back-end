@@ -1223,12 +1223,19 @@ class EventDaySimulationTest extends TestCase
             ->assertJsonPath('recently_completed.0.id', $id)
             ->assertJsonPath('recently_completed.0.doctor_name', $doctor->full_name);
 
+        // «سجّل زائراً»: looking the patient up offers the undo
+        $lookup = "/api/event-specialties/{$teeth}/register-patient/{$p['patient_id']}";
+        $this->as('officer', 'GET', $lookup)->assertOk()
+            ->assertJsonPath('already_booked', true)
+            ->assertJsonPath('undo_complete.id', $id);
+
         $this->as('reception', 'POST', "/api/waitinglist/undo-complete/{$id}")->assertForbidden();
         $this->as('manager', 'POST', "/api/waitinglist/undo-complete/{$id}")->assertForbidden();
         $this->assertSame('Completed', Appointment::find($id)->status);
 
         $this->as('officer', 'POST', "/api/waitinglist/undo-complete/{$id}")->assertOk();
         $this->as('officer', 'GET', $station)->assertOk()->assertJsonCount(0, 'recently_completed');
+        $this->as('officer', 'GET', $lookup)->assertOk()->assertJsonPath('undo_complete', null);
         $this->assertDatabaseHas('appointment_logs', ['appointment_id' => $id, 'action' => 'status_changed']);
         $this->assertDatabaseHas('admin_actions', ['action' => 'WaitingListController@undoCompleted', 'user_id' => $this->users['officer']->id]);
     }

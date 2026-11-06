@@ -1349,10 +1349,18 @@ private function handleMedicalDocuments(Request $request, $patientId)
         $atLimit = $counted >= $limit;
 
         $first = $booked->first();
+        // Passed here today: the officer looking them up can undo a wrong «إجتاز»
+        $passedHere = $booked->first(fn ($a) => (int) $a->event_specialty_id === (int) $eventSpecialty->id
+            && $a->status === 'Completed' && app(QueueService::class)->isToday($a));
 
         return response()->json([
             'patient_id' => (int) $patientId,
             'full_name' => $first->full_name,
+            'undo_complete' => $passedHere ? [
+                'id' => $passedHere->id,
+                'full_name' => $passedHere->full_name,
+                'visit_group' => $passedHere->visit_group,
+            ] : null,
             'specialties' => $booked->map(fn ($a) => [
                 'name' => $a->eventSpecialty?->specialty?->name,
                 'status' => $a->status,
