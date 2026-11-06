@@ -975,6 +975,44 @@ class VisitDayTest extends TestCase
         $this->assertSame('Present', $this->statusOf($p['ids'][1]));
     }
 
+    public function test_dilatation_ordered_during_the_visit(): void
+    {
+        [$a] = $this->esIds();
+        DB::table('event_specialties')->where('id', $a)->update(['has_dilatation' => true]); // تصحيح النظر
+        $doctor = $this->doctorFor($a);
+        $queues = app(QueueService::class);
+
+        // Alone: the visit ends and the doctor is free for the next patient
+        $alone = $this->patient([[$a, 'today']], null, '0555000001');
+        $this->checkIn($alone['patient_id']);
+        $this->enter($alone['ids'], $doctor)->assertOk();
+        $this->assertTrue($queues->doctorBusy($doctor->id));
+
+        $this->postJson("/api/waitinglist/Dilatation/{$alone['ids'][0]}")->assertOk();
+        $this->assertSame('DilatationSent', $this->statusOf($alone['ids'][0]));
+        $this->assertNull(Appointment::find($alone['ids'][0])->doctor_id);
+        $this->assertFalse($queues->doctorBusy($doctor->id));
+
+        // Family: only that member leaves, the others stay with the doctor
+        $family = [];
+        foreach (range(1, 2) as $i) {
+            $family[] = $this->patient([[$a, 'today']], null, '+213 555 77 88 99');
+            $this->checkIn(end($family)['patient_id']);
+        }
+        $ids = array_map(fn ($p) => $p['ids'][0], $family);
+        $this->postJson('/api/waitinglist/enter', ['ids' => $ids, 'doctor_id' => $doctor->id])->assertOk();
+
+        $this->postJson("/api/waitinglist/Dilatation/{$ids[0]}")->assertOk();
+        $this->assertSame('DilatationSent', $this->statusOf($ids[0]));
+        $this->assertSame('Entered', $this->statusOf($ids[1]));
+        $this->assertTrue($queues->doctorBusy($doctor->id));
+
+        $this->postJson("/api/waitinglist/Complete/{$ids[1]}")->assertOk();
+        $this->assertSame('Completed', $this->statusOf($ids[1]));
+        $this->assertSame('DilatationSent', $this->statusOf($ids[0]));
+        $this->assertFalse($queues->doctorBusy($doctor->id));
+    }
+
     public function test_family_enters_and_passes_together_with_split_time(): void
     {
         [$a] = $this->esIds();
