@@ -1196,6 +1196,118 @@ class VisitDayTest extends TestCase
         }
     }
 
+    /** The patient's own «إجتاز» leaves the others with the doctor; the time still adds up to the visit. */
+    public function test_one_family_member_passes_alone_and_the_others_stay(): void
+    {
+        [$a] = $this->esIds();
+        $family = [];
+        foreach (range(1, 3) as $i) {
+            $family[] = $this->patient([[$a, 'today']], null, '+213 555 77 88 99');
+            $this->checkIn(end($family)['patient_id']);
+        }
+        $ids = array_map(fn ($p) => $p['ids'][0], $family);
+        $doctor = $this->doctorFor($a);
+        $queues = app(QueueService::class);
+
+        Carbon::setTestNow(Carbon::now());
+        $this->enter($ids, $doctor)->assertOk();
+
+        Carbon::setTestNow(Carbon::now()->addMinutes(30));
+        $this->postJson("/api/waitinglist/Complete/{$ids[0]}", ['only' => true])->assertOk();
+        $this->assertSame('Completed', $this->statusOf($ids[0]));
+        $this->assertSame('Entered', $this->statusOf($ids[1]));
+        $this->assertSame('Entered', $this->statusOf($ids[2]));
+        $this->assertTrue($queues->doctorBusy($doctor->id));
+
+        // The card's button: everyone still in, not the one already gone
+        Carbon::setTestNow(Carbon::now()->addMinutes(20));
+        $this->postJson("/api/waitinglist/Complete/{$ids[1]}")->assertOk();
+        Carbon::setTestNow();
+
+        $this->assertFalse($queues->doctorBusy($doctor->id));
+        $seconds = Appointment::whereIn('id', $ids)->orderBy('id')->pluck('visit_seconds')->all();
+        $this->assertEqualsWithDelta(600, $seconds[0], 2);
+        $this->assertEqualsWithDelta(1200, $seconds[1], 2);
+        $this->assertEqualsWithDelta(1200, $seconds[2], 2);
+    }
+
+    /** The last one in, on their own button: the doctor is free and the whole time is accounted for. */
+    public function test_each_family_member_passes_alone_in_turn(): void
+    {
+        [$a] = $this->esIds();
+        $family = [];
+        foreach (range(1, 2) as $i) {
+            $family[] = $this->patient([[$a, 'today']], null, '+213 555 77 88 99');
+            $this->checkIn(end($family)['patient_id']);
+        }
+        $ids = array_map(fn ($p) => $p['ids'][0], $family);
+        $doctor = $this->doctorFor($a);
+
+        Carbon::setTestNow(Carbon::now());
+        $this->enter($ids, $doctor)->assertOk();
+        Carbon::setTestNow(Carbon::now()->addMinutes(10));
+        $this->postJson("/api/waitinglist/Complete/{$ids[0]}", ['only' => true])->assertOk();
+        Carbon::setTestNow(Carbon::now()->addMinutes(10));
+        $this->postJson("/api/waitinglist/Complete/{$ids[1]}", ['only' => true])->assertOk();
+        Carbon::setTestNow();
+
+        $this->assertFalse(app(QueueService::class)->doctorBusy($doctor->id));
+        $this->assertEqualsWithDelta(1200, Appointment::whereIn('id', $ids)->sum('visit_seconds'), 2);
+    }
+
+    /** Undoing a member who passed alone: back in the same visit, the relatives are not touched. */
+    public function test_undo_of_a_member_who_passed_alone(): void
+    {
+        [$a] = $this->esIds();
+        $family = [];
+        foreach (range(1, 3) as $i) {
+            $family[] = $this->patient([[$a, 'today']], null, '+213 555 77 88 99');
+            $this->checkIn(end($family)['patient_id']);
+        }
+        $ids = array_map(fn ($p) => $p['ids'][0], $family);
+        $doctor = $this->doctorFor($a);
+
+        Carbon::setTestNow(Carbon::now());
+        $this->enter($ids, $doctor)->assertOk();
+        Carbon::setTestNow(Carbon::now()->addMinutes(5));
+        $this->postJson("/api/waitinglist/Complete/{$ids[0]}", ['only' => true])->assertOk();
+        Carbon::setTestNow(Carbon::now()->addMinutes(5));
+        $this->postJson("/api/waitinglist/Complete/{$ids[1]}", ['only' => true])->assertOk();
+
+        // Relative still inside: back with the doctor, not to the queue
+        $this->postJson("/api/waitinglist/undo-complete/{$ids[0]}")->assertOk();
+        Carbon::setTestNow();
+
+        $this->assertSame('Entered', $this->statusOf($ids[0]));
+        $this->assertSame('Completed', $this->statusOf($ids[1]));
+        $this->assertSame('Entered', $this->statusOf($ids[2]));
+        $this->assertSame((int) $doctor->id, (int) Appointment::find($ids[0])->doctor_id);
+    }
+
+    /** One of the family gone: the card keeps the visit's timer and the family's allowance. */
+    public function test_alarm_keeps_the_family_allowance_after_one_passes_alone(): void
+    {
+        [$a] = $this->esIds();
+        $family = [];
+        foreach (range(1, 2) as $i) {
+            $family[] = $this->patient([[$a, 'today']], null, '+213 555 77 88 99');
+            $this->checkIn(end($family)['patient_id']);
+        }
+        $ids = array_map(fn ($p) => $p['ids'][0], $family);
+        $doctor = $this->doctorFor($a);
+        $row = fn () => collect($this->getJson("/api/events/{$this->eventId}/doctor-visits")->assertOk()->json('doctors'))
+            ->firstWhere('doctor_id', $doctor->id);
+
+        $this->enter($ids, $doctor)->assertOk();
+        $before = $row()['current']['alarm_after_seconds'];
+        $this->postJson("/api/waitinglist/Complete/{$ids[0]}", ['only' => true])->assertOk();
+
+        $current = $row()['current'];
+        $this->assertNotNull($before);
+        $this->assertSame($before, $current['alarm_after_seconds']);
+        $this->assertCount(1, $current['patients']);
+    }
+
     public function test_relatives_by_phone(): void
     {
         [$a, $b] = $this->esIds();

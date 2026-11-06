@@ -1367,6 +1367,7 @@ private function handleMedicalDocuments(Request $request, $patientId)
                 'id' => $passedHere->id,
                 'full_name' => $passedHere->full_name,
                 'visit_group' => $passedHere->visit_group,
+                'completed_at' => $passedHere->completed_at?->toIso8601String(),
             ] : null,
             'specialties' => $booked->map(fn ($a) => [
                 'name' => $a->eventSpecialty?->specialty?->name,

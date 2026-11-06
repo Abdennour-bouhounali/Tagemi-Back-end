@@ -91,12 +91,12 @@ class WaitingListController extends Controller
 
     /**
      * "Passed" (إجتاز): examination done, the patient (with the family that
-     * entered with them) moves to their next specialty.
+     * entered with them, or alone with `only`) moves to their next specialty.
      */
-    public function Completed($id)
+    public function Completed(Request $request, $id)
     {
         $appointment = Appointment::with('eventSpecialty.specialty')->findOrFail($id);
-        $next = $this->queues->complete($appointment);
+        $next = $this->queues->complete($appointment, $request->boolean('only'));
 
         $this->audit('completed', $appointment);
 

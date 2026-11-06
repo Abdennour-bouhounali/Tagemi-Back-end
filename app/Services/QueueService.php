@@ -332,33 +332,38 @@ class QueueService
 
     /**
      * "Passed": examination done; the patient moves on to their next specialty.
-     * A family that entered together passes together; the visit time is split
-     * equally between them.
+     * A family that entered together passes together; with $alone only this
+     * patient passes and the others stay with the doctor. The visit time not yet
+     * given to those who already passed is split equally between those still in.
      *
      * @return Collection the next appointments the patients were sent to
      */
-    public function complete(Appointment $appointment): Collection
+    public function complete(Appointment $appointment, bool $alone = false): Collection
     {
         $this->assertStatus($appointment, ['Entered'], in_array($appointment->status, self::QUEUE_STATUSES, true)
             ? 'اضغط «دخل» أولاً مع اختيار الطبيب'
             : 'الزائر ليس عند الطبيب');
 
-        return DB::transaction(function () use ($appointment) {
-            $group = Appointment::where('status', 'Entered')
+        return DB::transaction(function () use ($appointment, $alone) {
+            $visit = Appointment::whereIn('status', ['Entered', 'Completed'])
                 ->where(fn ($q) => $appointment->visit_group
                     ? $q->where('visit_group', $appointment->visit_group)
                     : $q->whereKey($appointment->id))
                 ->lockForUpdate()
                 ->get();
+            $inside = $visit->where('status', 'Entered');
+            $group = $alone ? $inside->where('id', $appointment->id) : $inside;
 
             $now = now();
             $next = collect();
             // The visit lasts from the first one in (a relative may have joined late)
-            $start = $group->pluck('entered_at')->filter()->min();
+            $start = $visit->pluck('entered_at')->filter()->min();
+            $share = $start
+                ? intdiv(max(0, (int) $start->diffInSeconds($now, true) - (int) $visit->sum('visit_seconds')), max(1, $inside->count()))
+                : null;
             foreach ($group as $a) {
-                $seconds = $start ? max(0, $start->diffInSeconds($now, true)) : null;
                 $a->completed_at = $now;
-                $a->visit_seconds = $seconds === null ? null : intdiv((int) $seconds, $group->count());
+                $a->visit_seconds = $share;
                 $this->leaveQueue($a, 'Completed');
                 if ($promoted = $this->promoteNext($a->event_id, $a->patient_id)) {
                     $next->push($promoted);
@@ -370,9 +375,9 @@ class QueueService
     }
 
     /**
-     * Undo "Passed" (wrong click): the patient (with the family who passed with
-     * them) goes back to the doctor and the visit goes on, or to the head of the
-     * queue when the doctor already has someone else. The next specialty started
+     * Undo "Passed" (wrong click): the patient (with the family who passed in the
+     * same click) goes back to the doctor and the visit goes on, or to the head of
+     * the queue when the doctor is in another visit. The next specialty started
      * by the pass goes back on hold. Refused once they are with a doctor or in
      * dilatation elsewhere.
      *
@@ -387,9 +392,10 @@ class QueueService
         }
 
         return DB::transaction(function () use ($appointment) {
+            // One click stamps the same completed_at: a relative who passed apart stays passed
             $passed = fn () => Appointment::where('status', 'Completed')
                 ->where(fn ($q) => $appointment->visit_group
-                    ? $q->where('visit_group', $appointment->visit_group)
+                    ? $q->where('visit_group', $appointment->visit_group)->where('completed_at', $appointment->completed_at)
                     : $q->whereKey($appointment->id));
             $patientIds = $passed()->pluck('patient_id');
             $movedOn = fn () => self::scopeToday(Appointment::query())
@@ -420,7 +426,12 @@ class QueueService
             }
 
             $doctorId = $group->first()->doctor_id;
-            $withDoctor = $doctorId && !$this->doctorBusy($doctorId);
+            // Relatives of the same visit still inside don't make the doctor busy
+            $otherVisit = $doctorId && self::scopeToday(Appointment::query())
+                ->where('doctor_id', $doctorId)->where('status', 'Entered')
+                ->get(['visit_group'])
+                ->contains(fn ($a) => !$appointment->visit_group || $a->visit_group !== $appointment->visit_group);
+            $withDoctor = $doctorId && !$otherVisit;
 
             // Reversed: each one takes the head of the queue, so the first stays first
             foreach ($group->reverse() as $a) {

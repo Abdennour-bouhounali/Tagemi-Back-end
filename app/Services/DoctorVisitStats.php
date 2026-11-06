@@ -73,9 +73,12 @@ class DoctorVisitStats
 
         $current = null;
         if ($inside->isNotEmpty()) {
-            $enteredAt = $inside->min('entered_at');
+            // Relatives who already passed alone still count: same timer, same allowance
+            $group = $inside->first()->visit_group;
+            $visit = $group ? $visits->where('visit_group', $group) : $inside;
+            $enteredAt = $visit->min('entered_at');
             $elapsed = $enteredAt ? (int) $enteredAt->diffInSeconds($now, true) : 0;
-            $alarmAfter = $planned ? (int) round(self::ALARM_FACTOR * $planned * 60 * $inside->count()) : null;
+            $alarmAfter = $planned ? (int) round(self::ALARM_FACTOR * $planned * 60 * $visit->count()) : null;
             $current = [
                 'visit_group' => $inside->first()->visit_group,
                 'entered_at' => $enteredAt?->toIso8601String(),
