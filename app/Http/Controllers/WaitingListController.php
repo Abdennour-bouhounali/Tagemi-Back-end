@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use Illuminate\Support\Facades\Cache;
 use App\Models\Appointment;
 use App\Models\AppointmentLog;
 use App\Models\Doctor;
@@ -409,6 +410,11 @@ class WaitingListController extends Controller
      */
     public function stations($eventId)
     {
+        return response()->json(Cache::remember("stations:{$eventId}", (int) config('app.live_cache_seconds'), fn () => $this->stationsPayload($eventId)));
+    }
+
+    private function stationsPayload($eventId): array
+    {
         $event = Event::findOrFail($eventId);
         $counts = QueueService::scopeToday(Appointment::query())
             ->where('event_id', $event->id)
@@ -442,11 +448,11 @@ class WaitingListController extends Controller
             ->sortBy('name')
             ->values();
 
-        return response()->json([
+        return [
             'event' => ['id' => $event->id, 'name' => $event->name],
             'today' => QueueService::today(),
-            'stations' => $stations,
-        ]);
+            'stations' => $stations->all(),
+        ];
     }
 
     /**
@@ -510,6 +516,16 @@ class WaitingListController extends Controller
             return response()->json(['message' => 'Event not found', 'data' => [], 'event' => null], 404);
         }
 
+        // Every hall screen and phone shows the same answer: compute it once for all of them
+        return response()->json(Cache::remember(
+            "public-waitinglist:{$event->id}:{$limit}",
+            (int) config('app.live_cache_seconds'),
+            fn () => $this->publicWaitingListPayload($event, $limit),
+        ));
+    }
+
+    private function publicWaitingListPayload(Event $event, int $limit): array
+    {
         $rows = DB::table('appointments')
             ->join('event_specialties', 'appointments.event_specialty_id', '=', 'event_specialties.id')
             ->join('specialties', 'event_specialties.specialty_id', '=', 'specialties.id')
@@ -598,7 +614,7 @@ class WaitingListController extends Controller
             ->pluck('specialty_id')
             ->values();
 
-        return response()->json([
+        return [
             'data' => $grouped,
             // With the doctor (Entered), shown until they pass
             'calling' => $calling,
@@ -608,7 +624,7 @@ class WaitingListController extends Controller
             'timestamp' => now()->toIso8601String(),
             'total_patients' => $rows->count(),
             'specialties_count' => count($grouped),
-        ]);
+        ];
     }
 
     /** Optional "places" (1-50) chosen with the slider; defaults to PUSH_DOWN_PLACES. */

@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers;
 
+use Illuminate\Support\Facades\Cache;
+use App\Support\LiveVersion;
 use DateTime;
 use DateInterval;
 use Carbon\Carbon;
@@ -25,6 +27,16 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 class AppointmentController extends Controller implements HasMiddleware
 {
+    // Bounds how long the list can miss a change the live version doesn't cover (names of days, hours...)
+    private const BY_EVENT_CACHE_SECONDS = 30;
+
+    // Columns neither reader of /appointments/by-event uses (presence desk, statistics)
+    private const BY_EVENT_HIDDEN = [
+        'user_id', 'doctor_id', 'identity_key', 'position', 'orderList', 'comment', 'is_priority',
+        'archived_at', 'archived_reason', 'medical_documents', 'created_at', 'updated_at', 'checked_in_at',
+        'dilatation_started_at', 'data_consent_at', 'entered_at', 'completed_at', 'visit_group', 'visit_seconds',
+    ];
+
     const TEST_EVENT_ID = 2;
 
     public static function middleware()
@@ -101,31 +113,7 @@ private function checkInResponse(?Appointment $first, int $patientId)
  */
 public function liveVersion($eventId)
 {
-    $parts = Appointment::where('event_id', $eventId)
-        ->selectRaw('event_specialty_id, COUNT(*) as c, MAX(updated_at) as u, SUM(orderList) as o')
-        ->groupBy('event_specialty_id')
-        ->get()
-        ->mapWithKeys(fn ($row) => ['es_' . $row->event_specialty_id => md5("{$row->c}|{$row->u}|{$row->o}")])
-        ->all();
-
-    $doctors = DB::table('doctor_attendances')
-        ->join('days', 'days.id', '=', 'doctor_attendances.day_id')
-        ->join('event_specialties', 'event_specialties.id', '=', 'days.event_specialty_id')
-        ->where('event_specialties.event_id', $eventId)
-        ->whereDate('days.day_date', QueueService::today())
-        ->selectRaw('COUNT(*) as c, MAX(doctor_attendances.updated_at) as u')
-        ->first();
-    $parts['doctors'] = md5("{$doctors->c}|{$doctors->u}");
-
-    $parts['open'] = md5(EventSpecialty::where('event_id', $eventId)
-        ->whereDate('opened_on', QueueService::today())
-        ->orderBy('id')
-        ->pluck('id')
-        ->implode(','));
-
-    ksort($parts);
-
-    return response()->json(['version' => md5(implode('|', $parts)), 'parts' => $parts]);
+    return response()->json(LiveVersion::cached((int) $eventId));
 }
 
     /**
@@ -231,8 +219,19 @@ public function getByEvent(Request $request)
             'specialty_id' => 'nullable|exists:specialties,id'
         ]);
         
+        // The whole list is the heaviest answer of a visit day: it is built once per
+        // change and shared by every desk. The version is read fresh, never from the
+        // polling cache, so a desk reloading after its own action sees that action.
+        $eventId = (int) $validated['event_id'];
+        $shared = !isset($validated['specialty_id']) && !isset($validated['status']);
+        $cacheKey = "by-event:{$eventId}";
+        $version = $shared ? LiveVersion::compute($eventId)['version'] : null;
+        if ($shared && ($cached = Cache::get($cacheKey)) && $cached['version'] === $version) {
+            return response($cached['body'], 200, ['Content-Type' => 'application/json']);
+        }
+
         // appointments.event_id is indexed (same event as the appointment's specialty)
-        $query = Appointment::where('event_id', $validated['event_id']);
+        $query = Appointment::where('event_id', $eventId);
         if (isset($validated['specialty_id'])) {
             $query->whereHas('eventSpecialty', fn ($q) => $q->where('specialty_id', $validated['specialty_id']));
         }
@@ -257,14 +256,20 @@ public function getByEvent(Request $request)
         
         // ✅ CRITICAL: Append the medical_document_urls accessor to each appointment
         $appointments->each(function($apt) {
-            $apt->append('medical_document_urls');
+            $apt->append('medical_document_urls')->makeHidden(self::BY_EVENT_HIDDEN);
         });
-        
-        return response()->json([
+
+        $response = response()->json([
             'appointments' => $appointments,
             'total' => $appointments->count(),
             'statistics' => VisitStatistics::summarize($appointments),
-        ], 200);
+        ], 200, [], JSON_UNESCAPED_UNICODE);
+
+        if ($shared) {
+            Cache::put($cacheKey, ['version' => $version, 'body' => $response->getContent()], self::BY_EVENT_CACHE_SECONDS);
+        }
+
+        return $response;
         
     } catch (\Exception $e) {
         Log::error('Error fetching event appointments:', [

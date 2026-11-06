@@ -70,6 +70,9 @@ return [
     // Seconds during which an identical write request is answered once (0 = off)
     'duplicate_request_window' => (int) env('DUPLICATE_REQUEST_WINDOW', 3),
 
+    // Seconds devices share one answer of the polled endpoints (0 = no sharing)
+    'live_cache_seconds' => (int) env('LIVE_CACHE_SECONDS', 3),
+
     /*
     |--------------------------------------------------------------------------
     | Application Locale Configuration

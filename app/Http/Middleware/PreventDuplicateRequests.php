@@ -32,7 +32,8 @@ class PreventDuplicateRequests
 
         // By content only POST (creations, queue actions): a PATCH toggle sent
         // twice is open-then-close, and PUT/DELETE give the same result anyway
-        if ($window <= 0 || $request->isMethod('GET') || $request->isMethod('HEAD')
+        // «دوري» only reads: a POST to keep the phone number out of the URL, polled every 30 s
+        if ($window <= 0 || $request->isMethod('GET') || $request->isMethod('HEAD') || $request->is('api/public/my-turn')
             || ($idempotencyKey === '' && !$request->isMethod('POST'))) {
             return $next($request);
         }
