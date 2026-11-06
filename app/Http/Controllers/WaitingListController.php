@@ -83,6 +83,19 @@ class WaitingListController extends Controller
         return response()->json(['message' => 'أُلغي الدخول، عاد الزائر إلى أول الطابور']);
     }
 
+    /** «غائب»: not at the door, the patient goes back through reception. */
+    public function markAbsent($id)
+    {
+        $appointment = Appointment::findOrFail($id);
+        $this->queues->markAbsent($appointment);
+        $this->audit('marked_absent', $appointment);
+        AppointmentLog::record('marked_absent', $appointment->load('eventSpecialty.specialty'), [
+            'specialty' => $appointment->eventSpecialty?->specialty?->name,
+        ]);
+
+        return response()->json(['message' => 'الزائر #' . $appointment->patient_id . ' غائب: خرج من الطابور، ويسجّل حضوره من جديد في الاستقبال']);
+    }
+
     /** Family members (same phone) of the patient, for entering together. */
     public function relatives($id)
     {

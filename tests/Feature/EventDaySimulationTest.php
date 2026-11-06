@@ -202,8 +202,9 @@ class EventDaySimulationTest extends TestCase
             if ($active->count() > 1) {
                 $problems[] = "patient {$patientId} active in {$active->count()} specialties: " . $active->pluck('status', 'id')->toJson();
             }
+            // Pending beside a finished exam is fine: marked absent, back through reception
             $pending = $rows->where('status', 'Pending')->count();
-            if ($pending > 0 && $pending < $rows->count()) {
+            if ($pending > 0 && $pending + $rows->where('status', 'Completed')->count() < $rows->count()) {
                 $problems[] = "patient {$patientId} half checked in: " . $rows->pluck('status', 'id')->toJson();
             }
             // Nobody waits while one of their specialties is open and they are nowhere
@@ -424,7 +425,7 @@ class EventDaySimulationTest extends TestCase
 
         $actions = [
             'checkin' => 22, 'arrive' => 5, 'leave' => 2, 'break' => 3, 'back' => 3, 'hall' => 2, 'toggle' => 1, 'enter' => 18, 'complete' => 16, 'cancel' => 2,
-            'push' => 4, 'pushmany' => 1, 'special' => 2, 'front' => 2, 'dil_send' => 3, 'dil_recv' => 3, 'dil_done' => 3,
+            'push' => 4, 'pushmany' => 1, 'absent' => 3, 'special' => 2, 'front' => 2, 'dil_send' => 3, 'dil_recv' => 3, 'dil_done' => 3,
             'refer' => 2, 'switch' => 2, 'delete' => 1, 'reschedule' => 2, 'addspec' => 1, 'merge' => 2, 'family' => 3, 'organizer' => 2,
         ];
         $bag = [];
@@ -517,6 +518,12 @@ class EventDaySimulationTest extends TestCase
                     $a = $pick($this->queueIds($es));
                     if ($a) {
                         $this->as('manager', 'POST', "/api/waitinglist/Commingsoon/{$a}", ['places' => mt_rand(1, 8)])->assertOk();
+                    }
+                    break;
+                case 'absent':
+                    $a = $pick($this->queueIds($es));
+                    if ($a) {
+                        $this->as('officer', 'POST', "/api/waitinglist/absent/{$a}")->assertOk();
                     }
                     break;
                 case 'pushmany':
@@ -642,8 +649,13 @@ class EventDaySimulationTest extends TestCase
         if ($today->isEmpty()) {
             return 422;
         }
-        if ($today->contains(fn ($a) => $a->status !== 'Pending')) {
+        // Marked absent after a finished exam: reception admits what is left
+        if ($today->where('status', 'Pending')->isEmpty() || $today->contains(fn ($a) => !in_array($a->status, ['Pending', 'Completed'], true))) {
             return 409;
+        }
+        // Coming back after «غائب»: the limit was checked at the first arrival
+        if ($today->contains(fn ($a) => $a->checked_in_at !== null)) {
+            return 200;
         }
         // Appointments added past the limit (marked beyond_limit) are not counted
         if ($all->where('beyond_limit', false)->count() > 2 || $all->pluck('event_specialty_id')->duplicates()->isNotEmpty()) {
@@ -674,6 +686,7 @@ class EventDaySimulationTest extends TestCase
             ['POST', "/api/waitinglist/move-to-front/{$a}", [], ['super', 'special']],
             ['DELETE', "/api/appointments/{$a}", [], ['super', 'special', 'reception']],
             ['POST', "/api/waitinglist/undo-complete/{$a}", [], ['super', 'officer', 'organizer']],
+            ['POST', "/api/waitinglist/absent/{$a}", [], ['super', 'officer', 'organizer']],
             ['POST', "/api/appointments/{$a}/undo-visit", [], ['super', 'special', 'reception']],
             ['PATCH', "/api/appointments/{$a}/reschedule", [], ['super']],
             ['PATCH', "/api/event-specialties/{$eyes}/toggle-open", [], ['super']],
@@ -1294,6 +1307,147 @@ class EventDaySimulationTest extends TestCase
         $this->as('officer', 'GET', $lookup)->assertOk()->assertJsonPath('undo_complete', null);
         $this->assertDatabaseHas('appointment_logs', ['appointment_id' => $id, 'action' => 'status_changed']);
         $this->assertDatabaseHas('admin_actions', ['action' => 'WaitingListController@undoCompleted', 'user_id' => $this->users['officer']->id]);
+    }
+
+    /** «غائب»: out of the queue, everything back to Pending; reception puts them last. */
+    public function test_absent_patient_leaves_the_queue_and_comes_back_last(): void
+    {
+        $teeth = $this->esNamed('Teeth');
+        $skin = $this->esNamed('Skin');
+        $this->arrive($this->doctors[$teeth][0], $teeth);
+
+        $a = $this->patient([[$teeth, 'today'], [$skin, 'today']]);
+        $b = $this->patient([[$teeth, 'today']]);
+        $c = $this->patient([[$teeth, 'today']]);
+        foreach ([$a, $b, $c] as $p) {
+            $this->checkIn($p['patient_id'])->assertOk();
+        }
+        $this->assertSame('Waiting', Appointment::find($a['ids'][1])->status);
+
+        $this->as('officer', 'POST', "/api/waitinglist/absent/{$a['ids'][0]}")->assertOk();
+
+        $this->assertSame([$b['ids'][0], $c['ids'][0]], $this->queueIds($teeth));
+        $this->assertSame([1, 2], Appointment::whereIn('id', [$b['ids'][0], $c['ids'][0]])->orderBy('orderList')->pluck('orderList')->all());
+        foreach ($a['ids'] as $id) {
+            $this->assertSame('Pending', Appointment::find($id)->status);
+        }
+        $this->assertInvariants('after absent');
+        $this->assertDatabaseHas('appointment_logs', ['appointment_id' => $a['ids'][0], 'action' => 'marked_absent']);
+        $this->assertDatabaseHas('admin_actions', ['action' => 'WaitingListController@markAbsent', 'user_id' => $this->users['officer']->id]);
+
+        // Nothing moves until reception marks the presence again
+        $this->as('officer', 'POST', "/api/waitinglist/absent/{$a['ids'][0]}")->assertStatus(422);
+        $this->as('officer', 'POST', '/api/waitinglist/enter', ['ids' => [$a['ids'][0]], 'doctor_id' => $this->doctors[$teeth][0]->id])->assertStatus(422);
+
+        $this->checkIn($a['patient_id'])->assertOk();
+        $this->assertSame([$b['ids'][0], $c['ids'][0], $a['ids'][0]], $this->queueIds($teeth));
+        $this->assertSame('Waiting', Appointment::find($a['ids'][1])->status);
+        $this->checkIn($a['patient_id'])->assertStatus(409);
+        $this->assertInvariants('after coming back');
+    }
+
+    /** Finished exams stay finished, and reception can still let the patient back in. */
+    public function test_absent_after_a_finished_exam_keeps_it_and_reception_admits_the_rest(): void
+    {
+        $teeth = $this->esNamed('Teeth');
+        $skin = $this->esNamed('Skin');
+        $doctor = $this->doctors[$teeth][0];
+        $this->arrive($doctor, $teeth);
+        $this->arrive($this->doctors[$skin][0], $skin);
+
+        $p = $this->patient([[$teeth, 'today'], [$skin, 'today']]);
+        $this->checkIn($p['patient_id'])->assertOk();
+        $first = Appointment::whereIn('id', $p['ids'])->where('status', 'Present')->first();
+        $other = Appointment::whereIn('id', $p['ids'])->where('id', '!=', $first->id)->first();
+        $this->passed($p, $first->id, $this->doctors[$first->event_specialty_id][0]);
+        $completedAt = Appointment::find($first->id)->completed_at;
+        $this->assertSame('Present', $other->fresh()->status);
+
+        $this->as('super', 'POST', "/api/waitinglist/absent/{$other->id}")->assertOk();
+        $this->assertSame('Completed', $first->fresh()->status);
+        $this->assertSame('Pending', $other->fresh()->status);
+        $this->assertInvariants('absent after an exam');
+
+        $this->checkIn($p['patient_id'])->assertOk();
+        $this->assertSame('Completed', $first->fresh()->status);
+        $this->assertEquals($completedAt, $first->fresh()->completed_at);
+        $this->assertSame('Present', $other->fresh()->status);
+        $this->assertSame([$other->id], $this->queueIds($other->event_specialty_id));
+    }
+
+    /** While absent, reception's corrections must not put the patient back in a queue. */
+    public function test_absent_patient_stays_out_when_reception_corrects_their_appointments(): void
+    {
+        $teeth = $this->esNamed('Teeth');
+        $skin = $this->esNamed('Skin');
+        $this->arrive($this->doctors[$teeth][0], $teeth);
+        $this->arrive($this->doctors[$skin][0], $skin);
+
+        $p = $this->patient([[$teeth, 'today'], [$skin, 'today']]);
+        $this->checkIn($p['patient_id'])->assertOk();
+        $first = Appointment::whereIn('id', $p['ids'])->where('status', 'Present')->first();
+        $other = Appointment::whereIn('id', $p['ids'])->where('id', '!=', $first->id)->first();
+        $this->passed($p, $first->id, $this->doctors[$first->event_specialty_id][0]);
+        $this->as('officer', 'POST', "/api/waitinglist/absent/{$other->id}")->assertOk();
+
+        $this->as('reception', 'POST', "/api/appointments/{$first->id}/undo-visit")->assertOk();
+        $this->assertSame('Pending', $first->fresh()->status);
+        $this->assertSame('Pending', $other->fresh()->status);
+        $this->assertInvariants('exam undone while absent');
+    }
+
+    /** A referral can put the patient past the limit: that must not lock them out on their return. */
+    public function test_absent_after_a_referral_past_the_limit_can_check_in_again(): void
+    {
+        $teeth = $this->esNamed('Teeth');
+        $skin = $this->esNamed('Skin');
+        $heart = $this->esNamed('Heart');
+        foreach ([$teeth, $skin, $heart] as $es) {
+            $this->arrive($this->doctors[$es][0], $es);
+        }
+
+        $p = $this->patient([[$teeth, 'today'], [$skin, 'today']]); // the event allows 2
+        $this->checkIn($p['patient_id'])->assertOk();
+        $current = Appointment::whereIn('id', $p['ids'])->where('status', 'Present')->first();
+        $this->as('officer', 'POST', "/api/appointments/{$current->id}/refer", ['event_specialty_id' => $heart])->assertOk();
+        $referred = Appointment::where('patient_id', $p['patient_id'])->where('event_specialty_id', $heart)->first();
+
+        $this->as('officer', 'POST', "/api/waitinglist/absent/{$referred->id}")->assertOk();
+        $this->assertSame(['Pending'], Appointment::where('patient_id', $p['patient_id'])->pluck('status')->unique()->values()->all());
+
+        $this->checkIn($p['patient_id'])->assertOk();
+        $this->assertInvariants('back after a referral');
+
+        // The real limit still applies to a first arrival
+        $q = $this->patient([[$teeth, 'today'], [$skin, 'today'], [$heart, 'today']]);
+        $this->checkIn($q['patient_id'])->assertStatus(422);
+    }
+
+    /** Only a patient in the queue today: not with a doctor, not in dilatation, not another day. */
+    public function test_absent_is_refused_outside_the_queue(): void
+    {
+        $eyes = $this->esNamed('Eyes');
+        $doctor = $this->doctors[$eyes][0];
+        $this->arrive($doctor, $eyes);
+
+        $p = $this->patient([[$eyes, 'today']]);
+        $id = $p['ids'][0];
+        $absent = "/api/waitinglist/absent/{$id}";
+
+        $this->as('officer', 'POST', $absent)->assertStatus(422); // not arrived
+        $this->checkIn($p['patient_id'])->assertOk();
+
+        $this->as('officer', 'POST', '/api/waitinglist/enter', ['ids' => [$id], 'doctor_id' => $doctor->id])->assertOk();
+        $this->as('officer', 'POST', $absent)->assertStatus(422); // with the doctor
+        $this->as('officer', 'POST', "/api/waitinglist/cancel-enter/{$id}")->assertOk();
+
+        $this->as('officer', 'POST', "/api/waitinglist/Dilatation/{$id}")->assertOk();
+        $this->as('officer', 'POST', $absent)->assertStatus(422); // in dilatation
+        $this->assertSame('DilatationSent', Appointment::find($id)->status);
+
+        $later = $this->patient([[$eyes, 'tomorrow']]);
+        Appointment::whereKey($later['ids'][0])->update(['status' => 'Present']);
+        $this->as('officer', 'POST', "/api/waitinglist/absent/{$later['ids'][0]}")->assertStatus(422);
     }
 
     /** Specialty officer registers an existing patient in a specialty; past the limit only with the event switch. */

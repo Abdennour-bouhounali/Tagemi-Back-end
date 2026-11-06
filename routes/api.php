@@ -269,6 +269,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/waitinglist/enter', [WaitingListController::class, 'enter']); // event checked per appointment
         Route::post('waitinglist/cancel-enter/{id}', [WaitingListController::class, 'cancelEnter'])
             ->middleware('event.access:appointment,id');
+        Route::post('waitinglist/absent/{id}', [WaitingListController::class, 'markAbsent'])
+            ->middleware('event.access:appointment,id');
         Route::get('waitinglist/relatives/{id}', [WaitingListController::class, 'relatives'])
             ->middleware('event.access:appointment,id');
         Route::post('waitinglist/Complete/{id}', [WaitingListController::class, 'Completed'])

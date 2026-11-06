@@ -120,21 +120,26 @@ class QueueService
                 $this->failNoAppointmentToday($eventId, $patientId);
             }
 
-            if ($todays->contains(fn ($a) => $a->status !== 'Pending')) {
+            if (!$this->awaitsReception($todays)) {
                 throw new RuleException('الزائر مسجل حضوره اليوم مسبقاً', 409);
             }
-            $this->assertWithinLimit($eventId, $patientId);
+            // Back after «غائب»: admitted once today, a referral may have put them past the limit
+            if ($todays->every(fn ($a) => $a->checked_in_at === null)) {
+                $this->assertWithinLimit($eventId, $patientId);
+            }
 
-            Appointment::whereIn('id', $todays->pluck('id'))->update(['checked_in_at' => now()]);
+            // Exams finished before «غائب» stay finished
+            $arriving = $todays->where('status', 'Pending');
+            Appointment::whereIn('id', $arriving->pluck('id'))->update(['checked_in_at' => now()]);
 
             $special = $priority || $todays->contains('is_special', true);
             $open = $this->openSpecialtyIds($eventId);
-            $preferred = $firstAppointmentId ? $todays->firstWhere('id', $firstAppointmentId) : null;
+            $preferred = $firstAppointmentId ? $arriving->firstWhere('id', $firstAppointmentId) : null;
             $first = $preferred && in_array($preferred->event_specialty_id, $open)
                 ? $preferred
-                : $this->pickLeastBusy($todays, $open);
+                : $this->pickLeastBusy($arriving, $open);
 
-            foreach ($todays as $other) {
+            foreach ($arriving as $other) {
                 if ($other->id !== $first?->id) {
                     $this->setWaiting($other);
                 }
@@ -203,6 +208,37 @@ class QueueService
     }
 
     /**
+     * «غائب»: the officer called the patient and they are not there. They leave
+     * the queue and everything not finished today goes back to Pending, so they
+     * must go through reception again and join the end of a queue. Unlike
+     * «لم يأت بعد» the patient did come: finished exams stay, and checked_in_at
+     * stays too, which is how a check-in recognises the return.
+     *
+     * @throws RuleException
+     */
+    public function markAbsent(Appointment $appointment): void
+    {
+        $this->assertStatus($appointment, self::QUEUE_STATUSES, 'الزائر ليس في الطابور');
+        if (!$this->isToday($appointment)) {
+            throw new RuleException('هذا الموعد ليس اليوم', 422);
+        }
+
+        DB::transaction(function () use ($appointment) {
+            // Queue before the patient's rows, as enter() does: «دخل» at the same moment must not deadlock
+            $this->lockQueue($appointment->event_specialty_id);
+            $todays = $this->todaysAppointments($appointment->event_id, $appointment->patient_id);
+
+            if (!in_array($todays->firstWhere('id', $appointment->id)?->status, self::QUEUE_STATUSES, true)) {
+                throw new RuleException('الزائر ليس في الطابور', 409);
+            }
+
+            foreach ($todays->where('status', '!=', 'Completed') as $row) {
+                $this->leaveQueue($row, 'Pending');
+            }
+        });
+    }
+
+    /**
      * «لم يأت بعد» on one finished specialty: the exam never happened, the
      * patient's other exams stay. With other appointments today it goes back on
      * hold (and to its queue if they are nowhere else); alone, the patient goes
@@ -226,7 +262,8 @@ class QueueService
             }
 
             $this->clearVisit($row);
-            if ($todays->count() === 1) {
+            $others = $todays->reject(fn ($a) => $a->id === $row->id);
+            if ($others->isEmpty() || $this->awaitsReception($others)) {
                 $row->checked_in_at = null;
                 $this->leaveQueue($row, 'Pending');
                 return;
@@ -748,7 +785,7 @@ class QueueService
 
             $others = $this->todaysAppointments($appointment->event_id, $appointment->patient_id)
                 ->reject(fn ($a) => $a->id === $appointment->id);
-            if ($others->isEmpty() || $others->every(fn ($a) => $a->status === 'Pending')) {
+            if ($others->isEmpty() || $this->awaitsReception($others)) {
                 $appointment->save();
                 return;
             }
@@ -1072,6 +1109,12 @@ class QueueService
      * The candidate whose open specialty has the shortest queue. Candidates
      * come primary specialty first, which wins ties (stable sort).
      */
+    private function awaitsReception(Collection $todays): bool
+    {
+        return $todays->contains('status', 'Pending')
+            && $todays->every(fn ($a) => in_array($a->status, ['Pending', 'Completed'], true));
+    }
+
     private function pickLeastBusy(Collection $candidates, array $openIds): ?Appointment
     {
         return $candidates

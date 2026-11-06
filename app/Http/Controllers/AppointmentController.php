@@ -33,7 +33,7 @@ class AppointmentController extends Controller implements HasMiddleware
     // Columns neither reader of /appointments/by-event uses (presence desk, statistics)
     private const BY_EVENT_HIDDEN = [
         'user_id', 'doctor_id', 'identity_key', 'position', 'orderList', 'comment', 'is_priority',
-        'archived_at', 'archived_reason', 'medical_documents', 'created_at', 'updated_at', 'checked_in_at',
+        'archived_at', 'archived_reason', 'medical_documents', 'created_at', 'updated_at',
         'dilatation_started_at', 'data_consent_at', 'entered_at', 'completed_at', 'visit_group', 'visit_seconds',
     ];
 
