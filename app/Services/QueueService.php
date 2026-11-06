@@ -187,11 +187,14 @@ class QueueService
                 throw new RuleException("الطبيب {$doctor->full_name} غير مبرمج في هذا التخصص اليوم", 422);
             }
             // Arrived today; a doctor who left still sees the patients already in the queue
-            $arrived = DoctorAttendance::where('doctor_id', $doctor->id)->whereNotNull('arrived_at')
+            $attendance = DoctorAttendance::where('doctor_id', $doctor->id)->whereNotNull('arrived_at')
                 ->whereHas('day', fn ($q) => $q->where('event_specialty_id', $eventSpecialtyId)->whereDate('day_date', self::today()))
-                ->exists();
-            if (!$arrived) {
+                ->first();
+            if (!$attendance) {
                 throw new RuleException("الطبيب {$doctor->full_name} لم يُسجَّل وصوله اليوم", 422);
+            }
+            if ($attendance->isOnBreak()) {
+                throw new RuleException("الطبيب {$doctor->full_name} في استراحة، سجّل عودته أولاً", 422);
             }
             $current = self::scopeToday(Appointment::query())
                 ->where('doctor_id', $doctor->id)->where('status', 'Entered')
@@ -810,7 +813,8 @@ class QueueService
     public const FULL_MESSAGE = 'هذا التخصص بلغ عدد الزوار المقرر للأطباء الحاضرين، يُفحص فقط من فيه';
 
     /**
-     * Load against the visits planned for the doctors still present. Only
+     * Load against the visits planned for the doctors still present (a doctor
+     * on a break is: left_at stays empty and they come back). Only
      * limited once a doctor of the specialty left today: then the patients in
      * it (queue, with a doctor, dilatation) plus those the present doctors
      * already saw may not exceed the visits planned for those doctors.

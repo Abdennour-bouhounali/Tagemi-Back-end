@@ -63,6 +63,7 @@ class AdminAction extends Model
         'WaitingListController@toggleOpen' => 'فتح/أغلق تخصصاً',
         'DoctorAttendanceController@add' => 'أضاف أطباء إلى تخصص وفتحه',
         'DoctorAttendanceController@arrive' => 'سجّل وصول طبيب',
+        'DoctorAttendanceController@takeBreak' => 'سجّل استراحة طبيب',
         'DoctorAttendanceController@leave' => 'سجّل مغادرة طبيب',
         // Events
         'EventController@store' => 'أنشأ حدثاً',

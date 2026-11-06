@@ -332,8 +332,10 @@ Route::middleware('auth:sanctum')->group(function () {
         // Add registry doctors to today's day (not planned in the event form): they arrive and open the queue
         Route::post('/event-specialties/{id}/doctors', [DoctorAttendanceController::class, 'add'])
             ->whereNumber('id')->middleware('event.access:event_specialty,id');
-        // Doctors' arrival (first one opens the queue) and departure (last one closes it)
+        // Doctors' arrival (first one opens the queue), break (back through arrive) and departure (last one closes it)
         Route::post('/event-specialties/{id}/doctors/{doctor}/arrive', [DoctorAttendanceController::class, 'arrive'])
+            ->whereNumber(['id', 'doctor']);
+        Route::post('/event-specialties/{id}/doctors/{doctor}/break', [DoctorAttendanceController::class, 'takeBreak'])
             ->whereNumber(['id', 'doctor']);
         Route::post('/event-specialties/{id}/doctors/{doctor}/leave', [DoctorAttendanceController::class, 'leave'])
             ->whereNumber(['id', 'doctor']);

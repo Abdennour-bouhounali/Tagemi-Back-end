@@ -28,7 +28,7 @@ class DoctorVisitStats
             ->whereDate('day_date', QueueService::today())
             ->get();
 
-        $attendance = DoctorAttendance::whereIn('day_id', $days->pluck('id'))->get()
+        $attendance = DoctorAttendance::with('periods')->whereIn('day_id', $days->pluck('id'))->get()
             ->keyBy(fn ($a) => $a->day_id . '-' . $a->doctor_id);
 
         $visits = QueueService::scopeToday(Appointment::query())
@@ -69,7 +69,7 @@ class DoctorVisitStats
         $completed = $visits->where('status', 'Completed');
         $timed = $completed->whereNotNull('visit_seconds');
         $inside = $visits->where('status', 'Entered')->values();
-        $present = (bool) $attendance?->isPresent();
+        $present = (bool) $attendance?->isWorking();
 
         $current = null;
         if ($inside->isNotEmpty()) {
@@ -86,12 +86,13 @@ class DoctorVisitStats
             ];
         }
 
-        // Free since the last visit ended (or since arrival) while patients wait
+        // Free since the last visit ended (or since coming in, a break doesn't count) while patients wait
         $idleSince = null;
         if ($present && !$current) {
+            $presentSince = $attendance->presentSince();
             $idleSince = $completed->max('completed_at');
-            if (!$idleSince || $idleSince->lt($attendance->arrived_at)) {
-                $idleSince = $attendance->arrived_at;
+            if (!$idleSince || $idleSince->lt($presentSince)) {
+                $idleSince = $presentSince;
             }
         }
         $idleMinutes = $idleSince ? intdiv((int) $idleSince->diffInSeconds($now, true), 60) : null;
@@ -108,7 +109,11 @@ class DoctorVisitStats
             'planned_minutes' => $planned,
             'arrived_at' => $this->clock($attendance?->arrived_at),
             'left_at' => $this->clock($attendance?->left_at),
+            'present_since' => $this->clock($attendance?->presentSince()),
+            'periods' => $attendance?->periodClocks() ?? [],
             'present' => $present,
+            'on_break' => (bool) $attendance?->isOnBreak(),
+            'on_break_since' => $this->clock($attendance?->on_break_since),
             'treated' => $completed->count(),
             'mean_minutes' => $timed->isEmpty() ? null : round($timed->avg('visit_seconds') / 60, 1),
             'mean_seconds' => $timed->isEmpty() ? null : (int) round($timed->avg('visit_seconds')),
@@ -127,7 +132,8 @@ class DoctorVisitStats
      * ones included). A specialty's doctors share one queue, so it ends at
      * remaining / sum(1 / mean of each working doctor); a doctor's own estimate
      * assumes the remaining patients are split equally between them.
-     * Working doctors = present ones, or all planned ones before anyone arrived.
+     * Working doctors = present ones and those on a break, or all planned ones
+     * before anyone arrived.
      * A doctor with no finished visit yet counts at the planned visit time.
      *
      * @param Collection $doctors forEvent() rows, keyed by event specialty id
@@ -159,7 +165,7 @@ class DoctorVisitStats
         foreach ($doctors as $eventSpecialtyId => $rows) {
             $left = $remaining[$eventSpecialtyId] ?? null;
             $count = (int) ($left->total ?? 0);
-            $working = $rows->where('present', true);
+            $working = $rows->filter(fn ($d) => $d['present'] || $d['on_break']);
             if ($working->isEmpty() && $rows->where('treated', '>', 0)->isEmpty() && $rows->whereNotNull('left_at')->isEmpty()) {
                 $working = $rows; // nobody arrived yet: the planned doctors
             }

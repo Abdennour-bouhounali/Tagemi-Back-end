@@ -333,7 +333,7 @@ class WaitingListController extends Controller
             ]);
         }
 
-        $doctorPresent = DoctorAttendance::whereNotNull('arrived_at')->whereNull('left_at')
+        $doctorPresent = DoctorAttendance::whereNotNull('arrived_at')->whereNull('left_at')->whereNull('on_break_since')
             ->whereHas('day', fn ($q) => $q->where('event_specialty_id', $eventSpecialty->id)->whereDate('day_date', QueueService::today()))
             ->exists();
         if (!$doctorPresent) {
@@ -491,7 +491,7 @@ class WaitingListController extends Controller
                 'appointments.doctor_id', 'event_specialties.specialty_id')
             ->get();
 
-        // Free doctors per specialty: arrived today, not left, nobody with them.
+        // Free doctors per specialty: arrived today, not left or on a break, nobody with them.
         // As many visitors as free doctors are invited in («تفضل بالدخول»).
         $busyDoctors = $inside->pluck('doctor_id')->filter()->unique();
         $freeDoctors = DB::table('doctor_attendances')
@@ -501,6 +501,7 @@ class WaitingListController extends Controller
             ->whereDate('days.day_date', QueueService::today())
             ->whereNotNull('doctor_attendances.arrived_at')
             ->whereNull('doctor_attendances.left_at')
+            ->whereNull('doctor_attendances.on_break_since')
             ->whereNotIn('doctor_attendances.doctor_id', $busyDoctors)
             ->select('event_specialties.specialty_id', 'doctor_attendances.doctor_id')
             ->distinct()

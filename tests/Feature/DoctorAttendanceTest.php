@@ -7,6 +7,7 @@ use App\Models\EventSpecialty;
 use App\Models\User;
 use App\Services\QueueService;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
@@ -89,6 +90,173 @@ class DoctorAttendanceTest extends TestCase
         $this->assertNotNull($row['arrived_at']);
         $this->assertNotNull($row['left_at']);
         $this->assertFalse($row['present']);
+    }
+
+    private function at(string $clock): void
+    {
+        Carbon::setTestNow(Carbon::parse(QueueService::today() . ' ' . $clock, QueueService::TIMEZONE));
+    }
+
+    private function row(Doctor $doctor, ?string $url = null): array
+    {
+        $doctors = $url
+            ? $this->getJson($url)->assertOk()->json('doctors')
+            : $this->getJson("/api/events/{$this->eventId}/doctors-today")->assertOk()->json('specialties.0.doctors');
+
+        return collect($doctors)->firstWhere('doctor_id', $doctor->id);
+    }
+
+    public function test_a_doctor_can_leave_and_come_back_several_times_in_a_day(): void
+    {
+        $arrive = "/api/event-specialties/{$this->esId}/doctors/{$this->drA->id}/arrive";
+        $leave = "/api/event-specialties/{$this->esId}/doctors/{$this->drA->id}/leave";
+
+        $this->at('08:00');
+        $this->postJson($arrive)->assertOk();
+        $this->at('10:00');
+        $this->postJson($leave)->assertOk()->assertJsonPath('is_open', false);
+        $this->assertFalse($this->isOpen());
+
+        $this->at('10:30');
+        $this->postJson($arrive)->assertOk();
+        $this->assertTrue($this->isOpen());
+        $this->at('12:00');
+        $this->postJson($leave)->assertOk();
+        $this->at('13:30');
+        $this->postJson($arrive)->assertOk();
+        $this->postJson($arrive)->assertStatus(409); // no empty period from a double click
+
+        $row = $this->row($this->drA);
+        $this->assertSame([
+            ['arrived_at' => '08:00', 'left_at' => '10:00', 'break' => false],
+            ['arrived_at' => '10:30', 'left_at' => '12:00', 'break' => false],
+            ['arrived_at' => '13:30', 'left_at' => null, 'break' => false],
+        ], $row['periods']);
+        $this->assertSame('08:00', $row['arrived_at']);
+        $this->assertSame('13:30', $row['present_since']);
+        $this->assertNull($row['left_at']);
+        $this->assertTrue($row['present']);
+
+        $this->at('15:00');
+        $this->postJson($leave)->assertOk();
+        $row = $this->row($this->drA);
+        $this->assertSame(['arrived_at' => '13:30', 'left_at' => '15:00', 'break' => false], $row['periods'][2]);
+        $this->assertSame('15:00', $row['left_at']);
+        $this->assertNull($row['present_since']);
+
+        $history = $this->getJson("/api/doctors/{$this->drA->id}/history")->assertOk();
+        $history->assertJsonCount(3, 'days.0.periods')->assertJsonPath('summary.days_present', 1);
+    }
+
+    public function test_time_away_on_a_break_does_not_count_as_idle(): void
+    {
+        $arrive = "/api/event-specialties/{$this->esId}/doctors/{$this->drA->id}/arrive";
+
+        $this->at('08:00');
+        $this->postJson($arrive)->assertOk();
+        $this->at('09:00');
+        $this->postJson("/api/event-specialties/{$this->esId}/doctors/{$this->drA->id}/leave")->assertOk();
+        $this->at('11:00');
+        $this->postJson($arrive)->assertOk();
+        $this->at('11:04');
+
+        $row = $this->row($this->drA, "/api/event-specialties/{$this->esId}/doctors-present");
+        $this->assertSame(4, $row['idle_minutes']);
+        $this->assertSame('11:00', $row['present_since']);
+        $this->assertCount(2, $row['periods']);
+    }
+
+    public function test_a_doctor_added_on_the_day_gets_a_period_and_can_return(): void
+    {
+        $drC = $this->doctor('ج');
+        $this->at('09:00');
+        $this->postJson("/api/event-specialties/{$this->esId}/doctors", ['doctor_ids' => [$drC->id], 'end_time' => '23:59', 'visit_minutes' => 20])->assertOk();
+        $this->at('10:00');
+        $this->postJson("/api/event-specialties/{$this->esId}/doctors/{$drC->id}/leave")->assertOk();
+        $this->at('11:00');
+        $this->postJson("/api/event-specialties/{$this->esId}/doctors", ['doctor_ids' => [$drC->id], 'end_time' => '23:59', 'visit_minutes' => 20])->assertOk();
+
+        $this->assertSame([
+            ['arrived_at' => '09:00', 'left_at' => '10:00', 'break' => false],
+            ['arrived_at' => '11:00', 'left_at' => null, 'break' => false],
+        ], $this->row($drC)['periods']);
+    }
+
+    private function url(Doctor $doctor, string $action): string
+    {
+        return "/api/event-specialties/{$this->esId}/doctors/{$doctor->id}/{$action}";
+    }
+
+    public function test_a_break_keeps_the_queue_open_and_ends_with_the_return(): void
+    {
+        $this->at('08:00');
+        $this->postJson($this->url($this->drA, 'break'))->assertStatus(409); // not arrived
+        $this->postJson($this->url($this->drA, 'arrive'))->assertOk();
+
+        $this->at('12:00');
+        $this->postJson($this->url($this->drA, 'break'))->assertOk()->assertJsonPath('is_open', true);
+        $this->postJson($this->url($this->drA, 'break'))->assertStatus(409);
+        $this->assertTrue($this->isOpen()); // the only doctor is out, but coming back
+
+        $row = $this->row($this->drA);
+        $this->assertTrue($row['on_break']);
+        $this->assertFalse($row['present']);
+        $this->assertSame('12:00', $row['on_break_since']);
+        $this->assertNull($row['left_at']);
+        $this->assertNull($row['present_since']);
+
+        $this->at('13:00');
+        $this->postJson($this->url($this->drA, 'arrive'))->assertOk();
+        $row = $this->row($this->drA);
+        $this->assertFalse($row['on_break']);
+        $this->assertTrue($row['present']);
+        $this->assertSame([
+            ['arrived_at' => '08:00', 'left_at' => '12:00', 'break' => true],
+            ['arrived_at' => '13:00', 'left_at' => null, 'break' => false],
+        ], $row['periods']);
+    }
+
+    public function test_a_break_does_not_limit_capacity_but_a_departure_does(): void
+    {
+        $this->postJson($this->url($this->drA, 'arrive'))->assertOk();
+        $this->postJson($this->url($this->drB, 'arrive'))->assertOk();
+        $queues = app(QueueService::class);
+
+        $this->postJson($this->url($this->drA, 'break'))->assertOk();
+        $this->assertFalse($queues->capacity($this->esId)['limited']);
+
+        $this->postJson($this->url($this->drB, 'leave'))->assertOk()->assertJsonPath('is_open', true); // A is coming back
+        $capacity = $queues->capacity($this->esId);
+        $this->assertTrue($capacity['limited']);
+        $this->assertSame(12, $capacity['capacity']); // A's planned visits still count
+    }
+
+    public function test_leaving_from_a_break_closes_the_queue_at_the_break_time(): void
+    {
+        $this->at('08:00');
+        $this->postJson($this->url($this->drA, 'arrive'))->assertOk();
+        $this->at('12:00');
+        $this->postJson($this->url($this->drA, 'break'))->assertOk();
+        $this->at('14:00');
+        $this->postJson($this->url($this->drA, 'leave'))->assertOk()->assertJsonPath('is_open', false);
+
+        $row = $this->row($this->drA);
+        $this->assertFalse($row['on_break']);
+        $this->assertSame('12:00', $row['left_at']);
+        $this->assertSame([['arrived_at' => '08:00', 'left_at' => '12:00', 'break' => false]], $row['periods']);
+    }
+
+    public function test_a_queue_does_not_reopen_with_every_doctor_on_a_break(): void
+    {
+        $this->postJson($this->url($this->drA, 'arrive'))->assertOk();
+        $this->postJson($this->url($this->drA, 'break'))->assertOk();
+        $this->patchJson("/api/event-specialties/{$this->esId}/toggle-open")->assertOk(); // closes
+        $this->patchJson("/api/event-specialties/{$this->esId}/toggle-open")->assertStatus(422);
+
+        // Picking them again in «أضف طبيبًا» ends the break
+        $this->postJson("/api/event-specialties/{$this->esId}/doctors", ['doctor_ids' => [$this->drA->id], 'end_time' => '23:59', 'visit_minutes' => 20])->assertOk();
+        $this->assertTrue($this->row($this->drA)['present']);
+        $this->assertTrue($this->isOpen());
     }
 
     public function test_unscheduled_doctor_and_other_roles_are_refused(): void

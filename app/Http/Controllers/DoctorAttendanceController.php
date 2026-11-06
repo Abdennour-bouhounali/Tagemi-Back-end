@@ -16,9 +16,12 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Visit day (super admin): doctors' arrival and departure. The first doctor
- * of a specialty who arrives opens its queue; when the last one present
- * leaves, the queue closes (patients already in it are still served).
+ * Visit day (super admin): doctors' arrival and departure, as many times as
+ * needed in a day (a mid-day break). The first doctor of a specialty who
+ * arrives opens its queue; when the last one present leaves, the queue closes
+ * (patients already in it are still served) until a doctor comes back.
+ * «استراحة» is a short absence: the doctor takes no patients until back, but
+ * the queue stays open and their planned visits still count.
  * «غادر» only changes where new patients are sent: it is allowed while the
  * doctor is with a patient, who finishes that visit and the queue.
  */
@@ -48,7 +51,7 @@ class DoctorAttendanceController extends Controller
             ->whereDate('day_date', $date)
             ->get();
 
-        $attendance = DoctorAttendance::whereIn('day_id', $days->pluck('id'))->get()
+        $attendance = DoctorAttendance::with('periods')->whereIn('day_id', $days->pluck('id'))->get()
             ->keyBy(fn ($a) => $a->day_id . '-' . $a->doctor_id);
 
         $specialties = $days->map(fn ($day) => [
@@ -63,7 +66,11 @@ class DoctorAttendanceController extends Controller
                     'planned_visits' => (int) $intervals->sum('visits_count'),
                     'arrived_at' => $this->clock($a?->arrived_at),
                     'left_at' => $this->clock($a?->left_at),
-                    'present' => (bool) $a?->isPresent(),
+                    'present_since' => $this->clock($a?->presentSince()),
+                    'periods' => $a?->periodClocks() ?? [],
+                    'present' => (bool) $a?->isWorking(),
+                    'on_break' => (bool) $a?->isOnBreak(),
+                    'on_break_since' => $this->clock($a?->on_break_since),
                 ];
             })->values(),
         ])->values();
@@ -129,11 +136,8 @@ class DoctorAttendanceController extends Controller
                     ]);
                 }
                 $attendance = $this->attendance($day, $doctor);
-                if (!$attendance->isPresent()) {
-                    $attendance->arrived_at ??= now();
-                    $attendance->left_at = null;
-                    $attendance->recorded_by = Auth::id();
-                    $attendance->save();
+                if (!$attendance->isWorking()) {
+                    $attendance->recordArrival();
                 }
             }
         });
@@ -155,19 +159,18 @@ class DoctorAttendanceController extends Controller
         $eventSpecialty = EventSpecialty::findOrFail($eventSpecialtyId);
         $day = $this->scheduledToday($eventSpecialty, $doctor);
 
-        DB::transaction(function () use ($day, $doctor) {
+        $fromBreak = DB::transaction(function () use ($day, $doctor) {
             $attendance = $this->attendance($day, $doctor);
-            if ($attendance->isPresent()) {
+            if ($attendance->isWorking()) {
                 throw new RuleException("الطبيب {$doctor->full_name} مسجل حاضراً من قبل", 409);
             }
-            // Back after leaving: keep the first arrival time
-            $attendance->arrived_at ??= now();
-            $attendance->left_at = null;
-            $attendance->recorded_by = Auth::id();
-            $attendance->save();
+            $fromBreak = $attendance->isOnBreak();
+            $attendance->recordArrival();
+
+            return $fromBreak;
         });
 
-        $message = "سُجّل وصول الطبيب {$doctor->full_name}";
+        $message = $fromBreak ? "سُجّلت عودة الطبيب {$doctor->full_name} من الاستراحة" : "سُجّل وصول الطبيب {$doctor->full_name}";
         if (!$eventSpecialty->isOpenToday()) {
             $result = $this->queues->openSpecialty($eventSpecialty);
             $sent = $result['sent'] + $result['moved'];
@@ -176,6 +179,23 @@ class DoctorAttendanceController extends Controller
         }
 
         return response()->json(['message' => $message, 'is_open' => true]);
+    }
+
+    /** Out for a while: no patients until back, the queue and the capacity don't change. */
+    public function takeBreak($eventSpecialtyId, Doctor $doctor)
+    {
+        $eventSpecialty = EventSpecialty::findOrFail($eventSpecialtyId);
+        $day = $this->scheduledToday($eventSpecialty, $doctor);
+
+        DB::transaction(function () use ($day, $doctor) {
+            $attendance = $this->attendance($day, $doctor);
+            if (!$attendance->isWorking()) {
+                throw new RuleException("الطبيب {$doctor->full_name} غير مسجل حاضراً", 409);
+            }
+            $attendance->recordBreak();
+        });
+
+        return response()->json(['message' => "سُجّلت استراحة الطبيب {$doctor->full_name}", 'is_open' => $eventSpecialty->isOpenToday()]);
     }
 
     public function leave($eventSpecialtyId, Doctor $doctor)
@@ -188,9 +208,7 @@ class DoctorAttendanceController extends Controller
             if (!$attendance->isPresent()) {
                 throw new RuleException("الطبيب {$doctor->full_name} غير مسجل حاضراً", 409);
             }
-            $attendance->left_at = now();
-            $attendance->recorded_by = Auth::id();
-            $attendance->save();
+            $attendance->recordDeparture();
 
             return DoctorAttendance::where('day_id', $day->id)
                 ->whereNotNull('arrived_at')->whereNull('left_at')
@@ -217,7 +235,7 @@ class DoctorAttendanceController extends Controller
             ->get()
             ->groupBy('day_id');
 
-        $attendance = DoctorAttendance::where('doctor_id', $doctor->id)
+        $attendance = DoctorAttendance::with('periods')->where('doctor_id', $doctor->id)
             ->whereIn('day_id', $intervals->keys())->get()->keyBy('day_id');
 
         $days = $intervals->map(function ($dayIntervals, $dayId) use ($attendance) {
@@ -234,6 +252,7 @@ class DoctorAttendanceController extends Controller
                 'planned_visits' => (int) $dayIntervals->sum('visits_count'),
                 'arrived_at' => $this->clock($a?->arrived_at),
                 'left_at' => $this->clock($a?->left_at),
+                'periods' => $a?->periodClocks() ?? [],
                 'note' => $a?->note,
             ];
         })->sortByDesc('day_date')->values();

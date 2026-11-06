@@ -887,6 +887,41 @@ class VisitDayTest extends TestCase
         $this->assertSame('Completed', $this->statusOf($p['ids'][0]));
     }
 
+    public function test_doctor_on_a_break_sees_nobody_and_invites_nobody(): void
+    {
+        [$a] = $this->esIds();
+        $specialtyId = DB::table('event_specialties')->where('id', $a)->value('specialty_id');
+        $p = $this->patient([[$a, 'today']]);
+        $this->checkIn($p['patient_id']);
+        $doctor = $this->doctorFor($a);
+        $this->arrive($a, $doctor);
+        $invited = fn () => collect($this->getJson("/api/public/waitinglist?event_id={$this->eventId}")->assertOk()->json("data.{$specialtyId}"))
+            ->where('invited', true)->count();
+        $this->assertSame(1, $invited());
+
+        $this->postJson("/api/event-specialties/{$a}/doctors/{$doctor->id}/break")->assertOk();
+        $this->assertSame(0, $invited());
+        $this->enter([$p['ids'][0]], $doctor)->assertStatus(422);
+
+        $this->postJson("/api/event-specialties/{$a}/doctors/{$doctor->id}/arrive")->assertOk();
+        $this->assertSame(1, $invited());
+        $this->enter([$p['ids'][0]], $doctor)->assertOk();
+    }
+
+    public function test_doctor_on_a_break_with_a_patient_inside_still_passes_them(): void
+    {
+        [$a] = $this->esIds();
+        $p = $this->patient([[$a, 'today']]);
+        $this->checkIn($p['patient_id']);
+        $doctor = $this->doctorFor($a);
+        $this->arrive($a, $doctor);
+        $this->enter([$p['ids'][0]], $doctor)->assertOk();
+
+        $this->postJson("/api/event-specialties/{$a}/doctors/{$doctor->id}/break")->assertOk();
+        $this->postJson("/api/waitinglist/Complete/{$p['ids'][0]}")->assertOk();
+        $this->assertSame('Completed', $this->statusOf($p['ids'][0]));
+    }
+
     public function test_doctor_visits_numbers_alarm_and_idle(): void
     {
         // The test moves the clock 75 minutes on: start at 10:00 so it never crosses midnight
