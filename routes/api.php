@@ -209,7 +209,7 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     // Delete one specialty of a patient: super admin, special admin, and reception
-    // (reception only before the patient is checked in, and never the last one)
+    // (reception: not a specialty the patient already finished)
     Route::middleware('role:super_admin,special_admin,recipient_admin')->group(function () {
         Route::delete('/appointments/{appointment}', [AppointmentController::class, 'destroy'])
             ->middleware('event.access:appointment,appointment');
@@ -270,6 +270,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('waitinglist/relatives/{id}', [WaitingListController::class, 'relatives'])
             ->middleware('event.access:appointment,id');
         Route::post('waitinglist/Complete/{id}', [WaitingListController::class, 'Completed'])
+            ->middleware('event.access:appointment,id');
+        Route::post('waitinglist/undo-complete/{id}', [WaitingListController::class, 'undoCompleted'])
             ->middleware('event.access:appointment,id');
         Route::post('waitinglist/Dilatation/{id}', [WaitingListController::class, 'Dilatation'])
             ->middleware('event.access:appointment,id');

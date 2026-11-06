@@ -25,6 +25,8 @@ use Illuminate\Support\Facades\Log;
  */
 class WaitingListController extends Controller
 {
+    private const RECENTLY_COMPLETED_ROWS = 10;
+
 
     private const PUBLIC_LIST_DEFAULT = 10;
     private const PUBLIC_LIST_MAX = 50;
@@ -111,6 +113,19 @@ class WaitingListController extends Controller
         }
 
         return response()->json(['message' => 'تم الفحص']);
+    }
+
+    /** Undo "Passed" (wrong click): back with the doctor, or at the head of the queue. */
+    public function undoCompleted($id)
+    {
+        $appointment = Appointment::findOrFail($id);
+        $withDoctor = $this->queues->undoComplete($appointment);
+        $this->audit('completed_undone', $appointment);
+
+        return response()->json([
+            'message' => $withDoctor ? 'أُلغي «إجتاز»، عاد الزائر إلى الطبيب' : 'أُلغي «إجتاز»، الطبيب مشغول فعاد الزائر إلى أول الطابور',
+            'with_doctor' => $withDoctor,
+        ]);
     }
 
     /**
@@ -466,8 +481,26 @@ class WaitingListController extends Controller
         $eventSpecialty = EventSpecialty::where('event_id', $eventId)->where('specialty_id', $specialityId)->first();
 
         $appointments = collect();
+        $recentlyCompleted = collect();
         $summary = VisitStatistics::summarize(collect());
         if ($eventSpecialty) {
+            // Last ones who passed, so a wrong «إجتاز» can be undone
+            $recentlyCompleted = QueueService::scopeToday(Appointment::with('doctor'))
+                ->where('event_specialty_id', $eventSpecialty->id)
+                ->where('status', 'Completed')
+                ->orderByDesc('completed_at')
+                ->orderByDesc('id')
+                ->limit(self::RECENTLY_COMPLETED_ROWS)
+                ->get(['id', 'patient_id', 'full_name', 'doctor_id', 'visit_group', 'completed_at'])
+                ->map(fn ($a) => [
+                    'id' => $a->id,
+                    'patient_id' => $a->patient_id,
+                    'full_name' => $a->full_name,
+                    'doctor_name' => $a->doctor?->full_name,
+                    'visit_group' => $a->visit_group,
+                    'completed_at' => $a->completed_at?->toIso8601String(),
+                ]);
+
             // Today's counts for this specialty (same rules as every statistics screen)
             $summary = VisitStatistics::summarize(
                 QueueService::scopeToday(Appointment::query())
@@ -489,6 +522,7 @@ class WaitingListController extends Controller
 
         return response()->json([
             'appointments' => $appointments,
+            'recently_completed' => $recentlyCompleted,
             'speciality' => $specialty->name,
             'event_specialty_id' => $eventSpecialty?->id,
             'is_open' => (bool) $eventSpecialty?->isOpenToday(),

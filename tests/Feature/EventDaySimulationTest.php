@@ -672,7 +672,8 @@ class EventDaySimulationTest extends TestCase
             ['POST', '/api/waitinglist/enter', ['ids' => [$a], 'doctor_id' => $doctor], ['super', 'officer', 'organizer']],
             ['POST', "/api/waitinglist/Special/{$a}", [], ['super', 'special']],
             ['POST', "/api/waitinglist/move-to-front/{$a}", [], ['super', 'special']],
-            ['DELETE', "/api/appointments/{$a}", [], ['super', 'special']],
+            ['DELETE', "/api/appointments/{$a}", [], ['super', 'special', 'reception']],
+            ['POST', "/api/waitinglist/undo-complete/{$a}", [], ['super', 'officer', 'organizer']],
             ['PATCH', "/api/appointments/{$a}/reschedule", [], ['super']],
             ['PATCH', "/api/event-specialties/{$eyes}/toggle-open", [], ['super']],
             ['POST', "/api/event-specialties/{$eyes}/doctors/{$doctor}/leave", [], ['super']],
@@ -1022,8 +1023,8 @@ class EventDaySimulationTest extends TestCase
         $this->assertSame(3, Appointment::where('patient_id', $p['patient_id'])->where('status', 'Completed')->count());
     }
 
-    /** Reception deletes extra specialties (after a merge) only before check-in, never the last one. */
-    public function test_reception_deletes_specialties_only_before_check_in(): void
+    /** Reception deletes any appointment, also after check-in and the last one; a finished exam stays. */
+    public function test_reception_deletes_any_appointment_except_a_finished_exam(): void
     {
         [$eyes, $heart, $teeth] = [$this->esNamed('Eyes'), $this->esNamed('Heart'), $this->esNamed('Teeth')];
         $this->arrive($this->doctors[$eyes][0], $eyes);
@@ -1035,14 +1036,201 @@ class EventDaySimulationTest extends TestCase
         $this->assertNull(Appointment::find($p['ids'][2]));
         $this->checkIn($p['patient_id'])->assertOk();
 
-        // Checked in: reception may no longer delete
-        $this->as('reception', 'DELETE', "/api/appointments/{$p['ids'][1]}")->assertForbidden();
-        $this->assertNotNull(Appointment::find($p['ids'][1]));
+        // After check-in: a specialty on hold, then the one they queue in (the gap closes)
+        $this->as('reception', 'DELETE', "/api/appointments/{$p['ids'][1]}")->assertOk();
+        $behind = $this->patient([[$eyes, 'today']]);
+        $this->checkIn($behind['patient_id'])->assertOk();
+        $this->as('reception', 'DELETE', "/api/appointments/{$p['ids'][0]}")->assertOk();
+        $this->assertSame([$behind['ids'][0]], $this->queueIds($eyes));
+        $this->assertSame(1, Appointment::find($behind['ids'][0])->orderList);
 
-        // Never the patient's only specialty
+        // The patient's only specialty
         $single = $this->patient([[$heart, 'tomorrow']]);
-        $this->as('reception', 'DELETE', "/api/appointments/{$single['ids'][0]}")->assertForbidden();
+        $this->as('reception', 'DELETE', "/api/appointments/{$single['ids'][0]}")->assertOk();
+        $this->assertNull(Appointment::find($single['ids'][0]));
+        $this->assertDatabaseHas('appointment_logs', ['appointment_id' => $single['ids'][0], 'action' => 'deleted', 'user_id' => $this->users['reception']->id]);
+
+        // With a doctor: refused for now; finished: refused, the super admin decides
+        $doctor = $this->doctors[$eyes][0];
+        $this->as('officer', 'POST', '/api/waitinglist/enter', ['ids' => [$behind['ids'][0]], 'doctor_id' => $doctor->id])->assertOk();
+        $this->as('reception', 'DELETE', "/api/appointments/{$behind['ids'][0]}")->assertStatus(422);
+        $this->as('officer', 'POST', "/api/waitinglist/Complete/{$behind['ids'][0]}")->assertOk();
+        $this->as('reception', 'DELETE', "/api/appointments/{$behind['ids'][0]}")->assertForbidden();
+        $this->assertNotNull(Appointment::find($behind['ids'][0]));
+        $this->as('super', 'DELETE', "/api/appointments/{$behind['ids'][0]}")->assertOk();
         $this->assertInvariants('after reception deletes');
+    }
+
+    /** Puts a checked-in patient at the head of $esId with $doctor, then «إجتاز». */
+    private function passed(array $patient, int $appointmentId, Doctor $doctor)
+    {
+        $this->as('officer', 'POST', '/api/waitinglist/enter', ['ids' => [$appointmentId], 'doctor_id' => $doctor->id])->assertOk();
+
+        return $this->as('officer', 'POST', "/api/waitinglist/Complete/{$appointmentId}")->assertOk();
+    }
+
+    /** Wrong «إجتاز»: back with the same doctor, the visit goes on and can pass again. */
+    public function test_undo_pass_returns_to_the_doctor_and_the_visit_goes_on(): void
+    {
+        $teeth = $this->esNamed('Teeth');
+        $doctor = $this->doctors[$teeth][0];
+        $this->arrive($doctor, $teeth);
+        $p = $this->patient([[$teeth, 'today']]);
+        $this->checkIn($p['patient_id'])->assertOk();
+        $id = $p['ids'][0];
+        $this->passed($p, $id, $doctor);
+        $enteredAt = Appointment::find($id)->entered_at;
+
+        $this->as('officer', 'POST', "/api/waitinglist/undo-complete/{$id}")->assertOk()->assertJsonPath('with_doctor', true);
+
+        $a = Appointment::find($id);
+        $this->assertSame('Entered', $a->status);
+        $this->assertSame($doctor->id, $a->doctor_id);
+        $this->assertTrue($enteredAt->eq($a->entered_at));
+        $this->assertNull($a->completed_at);
+        $this->assertNull($a->visit_seconds);
+        $this->assertTrue($this->busy($doctor));
+        $this->assertInvariants('after undo pass');
+
+        // A second click finds nothing to undo
+        $this->as('officer', 'POST', "/api/waitinglist/undo-complete/{$id}")->assertStatus(422);
+
+        $this->as('officer', 'POST', "/api/waitinglist/Complete/{$id}")->assertOk();
+        $this->assertSame('Completed', Appointment::find($id)->status);
+        $this->assertNotNull(Appointment::find($id)->completed_at);
+    }
+
+    /** The next specialty started by the pass goes back on hold and its queue closes up. */
+    public function test_undo_pass_puts_the_next_specialty_back_on_hold(): void
+    {
+        [$heart, $teeth] = [$this->esNamed('Heart'), $this->esNamed('Teeth')];
+        $this->arrive($this->doctors[$heart][0], $heart);
+        $this->arrive($this->doctors[$teeth][0], $teeth);
+        $p = $this->patient([[$heart, 'today'], [$teeth, 'today']]);
+        $this->checkIn($p['patient_id'])->assertOk();
+        [$first, $second] = Appointment::find($p['ids'][0])->status === 'Present' ? [$p['ids'][0], $p['ids'][1]] : [$p['ids'][1], $p['ids'][0]];
+        $firstEs = Appointment::find($first)->event_specialty_id;
+        $secondEs = Appointment::find($second)->event_specialty_id;
+        $this->passed($p, $first, $this->doctors[$firstEs][0]);
+        $this->assertSame('Present', Appointment::find($second)->status);
+        $behind = $this->patient([[$secondEs, 'today']]);
+        $this->checkIn($behind['patient_id'])->assertOk();
+
+        $this->as('officer', 'POST', "/api/waitinglist/undo-complete/{$first}")->assertOk();
+
+        $this->assertSame('Entered', Appointment::find($first)->status);
+        $this->assertSame('Waiting', Appointment::find($second)->status);
+        $this->assertSame([$behind['ids'][0]], $this->queueIds($secondEs));
+        $this->assertSame(1, Appointment::find($behind['ids'][0])->orderList);
+        $this->assertInvariants('after undo pass with a next specialty');
+
+        // Passing again sends them on as usual
+        $this->as('officer', 'POST', "/api/waitinglist/Complete/{$first}")->assertOk();
+        $this->assertSame('Present', Appointment::find($second)->status);
+        $this->assertSame([$behind['ids'][0], $second], $this->queueIds($secondEs));
+    }
+
+    /** The doctor already took the next patient: back to the head of the queue, visit cleared. */
+    public function test_undo_pass_goes_to_the_head_of_the_queue_when_the_doctor_is_busy(): void
+    {
+        $teeth = $this->esNamed('Teeth');
+        $doctor = $this->doctors[$teeth][0];
+        $this->arrive($doctor, $teeth);
+        $ps = [];
+        foreach (range(1, 3) as $i) {
+            $ps[$i] = $this->patient([[$teeth, 'today']]);
+            $this->checkIn($ps[$i]['patient_id'])->assertOk();
+        }
+        [$a, $b, $c] = [$ps[1]['ids'][0], $ps[2]['ids'][0], $ps[3]['ids'][0]];
+        $this->passed($ps[1], $a, $doctor);
+        $this->as('officer', 'POST', '/api/waitinglist/enter', ['ids' => [$b], 'doctor_id' => $doctor->id])->assertOk();
+
+        $this->as('officer', 'POST', "/api/waitinglist/undo-complete/{$a}")->assertOk()->assertJsonPath('with_doctor', false);
+
+        $row = Appointment::find($a);
+        $this->assertSame('Present', $row->status);
+        $this->assertNull($row->doctor_id);
+        $this->assertNull($row->entered_at);
+        $this->assertNull($row->completed_at);
+        $this->assertSame([$a, $c], $this->queueIds($teeth));
+        $this->assertSame('Entered', Appointment::find($b)->status);
+        $this->assertInvariants('after undo pass with a busy doctor');
+    }
+
+    /** A family who passed together comes back together, whichever member is undone. */
+    public function test_undo_pass_brings_a_family_back_together(): void
+    {
+        $teeth = $this->esNamed('Teeth');
+        $doctor = $this->doctors[$teeth][0];
+        $this->arrive($doctor, $teeth);
+        $mother = $this->patient([[$teeth, 'today']], 'Mother', '0555123456');
+        $child = $this->patient([[$teeth, 'today']], 'Child', '0555123456');
+        $this->checkIn($mother['patient_id'])->assertOk();
+        $this->checkIn($child['patient_id'])->assertOk();
+        $ids = [$mother['ids'][0], $child['ids'][0]];
+        $this->as('officer', 'POST', '/api/waitinglist/enter', ['ids' => $ids, 'doctor_id' => $doctor->id])->assertOk();
+        $this->as('officer', 'POST', "/api/waitinglist/Complete/{$ids[0]}")->assertOk();
+
+        $this->as('officer', 'POST', "/api/waitinglist/undo-complete/{$ids[1]}")->assertOk();
+
+        $this->assertSame(['Entered', 'Entered'], Appointment::whereIn('id', $ids)->orderBy('id')->pluck('status')->all());
+        $this->as('officer', 'POST', "/api/waitinglist/Complete/{$ids[0]}")->assertOk();
+        $this->assertSame(['Completed', 'Completed'], Appointment::whereIn('id', $ids)->orderBy('id')->pluck('status')->all());
+    }
+
+    /** Already with a doctor or in dilatation elsewhere: the undo is refused and nothing moves. */
+    public function test_undo_pass_is_refused_once_the_patient_moved_on(): void
+    {
+        [$eyes, $heart] = [$this->esNamed('Eyes'), $this->esNamed('Heart')];
+        $this->arrive($this->doctors[$eyes][0], $eyes);
+        $this->arrive($this->doctors[$heart][0], $heart);
+        $p = $this->patient([[$heart, 'today'], [$eyes, 'today']]);
+        $this->checkIn($p['patient_id'])->assertOk();
+        [$first, $second] = Appointment::find($p['ids'][0])->status === 'Present' ? [$p['ids'][0], $p['ids'][1]] : [$p['ids'][1], $p['ids'][0]];
+        $firstEs = Appointment::find($first)->event_specialty_id;
+        $secondEs = Appointment::find($second)->event_specialty_id;
+        $this->passed($p, $first, $this->doctors[$firstEs][0]);
+
+        $this->as('officer', 'POST', '/api/waitinglist/enter', ['ids' => [$second], 'doctor_id' => $this->doctors[$secondEs][0]->id])->assertOk();
+        $this->as('officer', 'POST', "/api/waitinglist/undo-complete/{$first}")->assertStatus(422);
+        $this->assertSame('Completed', Appointment::find($first)->status);
+        $this->assertSame('Entered', Appointment::find($second)->status);
+
+        if ($secondEs === $eyes) {
+            $this->as('officer', 'POST', "/api/waitinglist/Dilatation/{$second}")->assertOk();
+            $this->as('officer', 'POST', "/api/waitinglist/undo-complete/{$first}")->assertStatus(422);
+            $this->assertSame('Completed', Appointment::find($first)->status);
+        }
+        $this->assertInvariants('after refused undo');
+    }
+
+    /** Only who can pass can undo; a patient not passed can't be undone; the station lists the last ones. */
+    public function test_undo_pass_roles_and_station_list(): void
+    {
+        $teeth = $this->esNamed('Teeth');
+        $doctor = $this->doctors[$teeth][0];
+        $this->arrive($doctor, $teeth);
+        $p = $this->patient([[$teeth, 'today']]);
+        $this->checkIn($p['patient_id'])->assertOk();
+        $id = $p['ids'][0];
+
+        $this->as('officer', 'POST', "/api/waitinglist/undo-complete/{$id}")->assertStatus(422);
+        $this->passed($p, $id, $doctor);
+
+        $specialtyId = DB::table('event_specialties')->where('id', $teeth)->value('specialty_id');
+        $station = "/api/waitinglist/GetWaitingListBySpeciality/{$this->eventId}/{$specialtyId}";
+        $this->as('officer', 'GET', $station)->assertOk()
+            ->assertJsonPath('recently_completed.0.id', $id)
+            ->assertJsonPath('recently_completed.0.doctor_name', $doctor->full_name);
+
+        $this->as('reception', 'POST', "/api/waitinglist/undo-complete/{$id}")->assertForbidden();
+        $this->as('manager', 'POST', "/api/waitinglist/undo-complete/{$id}")->assertForbidden();
+        $this->assertSame('Completed', Appointment::find($id)->status);
+
+        $this->as('officer', 'POST', "/api/waitinglist/undo-complete/{$id}")->assertOk();
+        $this->as('officer', 'GET', $station)->assertOk()->assertJsonCount(0, 'recently_completed');
+        $this->assertDatabaseHas('appointment_logs', ['appointment_id' => $id, 'action' => 'status_changed']);
+        $this->assertDatabaseHas('admin_actions', ['action' => 'WaitingListController@undoCompleted', 'user_id' => $this->users['officer']->id]);
     }
 
     /** Specialty officer registers an existing patient in a specialty; past the limit only with the event switch. */

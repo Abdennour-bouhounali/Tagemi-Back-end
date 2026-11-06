@@ -56,6 +56,7 @@ class AdminAction extends Model
         'WaitingListController@enter' => 'أدخل زائراً إلى الطبيب',
         'WaitingListController@cancelEnter' => 'ألغى دخول زائر',
         'WaitingListController@Completed' => 'سجّل اجتياز زائر',
+        'WaitingListController@undoCompleted' => 'تراجع عن اجتياز زائر',
         'WaitingListController@switchSpecialty' => 'بدّل تخصص زائر',
         'WaitingListController@Commingsoon' => 'نادى زائراً',
         'WaitingListController@Dilatation' => 'أرسل زائراً إلى التوسيع',

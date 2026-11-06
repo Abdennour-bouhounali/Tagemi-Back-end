@@ -187,7 +187,9 @@ class AuthorizationTest extends TestCase
         $this->actingAsRole(User::ROLE_RECIPIENT_ADMIN, $this->eventA['eventId']);
 
         $this->postJson("/api/waitinglist/Complete/{$this->eventA['appointmentId']}")->assertForbidden();
-        $this->deleteJson("/api/appointments/{$this->eventA['appointmentId']}")->assertForbidden();
+        // Reception deletes in its own event only
+        $this->deleteJson("/api/appointments/{$this->eventB['appointmentId']}")->assertForbidden();
+        $this->assertDatabaseHas('appointments', ['id' => $this->eventB['appointmentId']]);
         $this->getJson('/api/users')->assertForbidden();
     }
 

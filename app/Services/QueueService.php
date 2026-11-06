@@ -336,6 +336,77 @@ class QueueService
     }
 
     /**
+     * Undo "Passed" (wrong click): the patient (with the family who passed with
+     * them) goes back to the doctor and the visit goes on, or to the head of the
+     * queue when the doctor already has someone else. The next specialty started
+     * by the pass goes back on hold. Refused once they are with a doctor or in
+     * dilatation elsewhere.
+     *
+     * @return bool true when back with the doctor, false when back in the queue
+     * @throws RuleException
+     */
+    public function undoComplete(Appointment $appointment): bool
+    {
+        $this->assertStatus($appointment, ['Completed'], 'الزائر لم يجتز هذا التخصص');
+        if (!$this->isToday($appointment)) {
+            throw new RuleException('يمكن التراجع عن «إجتاز» في يوم الفحص فقط', 422);
+        }
+
+        return DB::transaction(function () use ($appointment) {
+            $passed = fn () => Appointment::where('status', 'Completed')
+                ->where(fn ($q) => $appointment->visit_group
+                    ? $q->where('visit_group', $appointment->visit_group)
+                    : $q->whereKey($appointment->id));
+            $patientIds = $passed()->pluck('patient_id');
+            $movedOn = fn () => self::scopeToday(Appointment::query())
+                ->where('event_id', $appointment->event_id)
+                ->whereIn('patient_id', $patientIds)
+                ->whereIn('status', self::ACTIVE_STATUSES);
+
+            // Queues before the patients' rows, as enter() does: no deadlock with «دخل»
+            $movedOn()->pluck('event_specialty_id')
+                ->push($appointment->event_specialty_id)
+                ->unique()->sort()
+                ->each(fn ($id) => $this->lockQueue($id));
+
+            $group = $passed()->lockForUpdate()->get();
+            if ($group->isEmpty()) {
+                throw new RuleException('الزائر لم يجتز هذا التخصص', 409);
+            }
+            $active = $movedOn()->lockForUpdate()->get();
+            if ($active->contains(fn ($a) => $a->status === 'Entered')) {
+                throw new RuleException('الزائر عند الطبيب في تخصص آخر، لا يمكن التراجع', 422);
+            }
+            if ($active->contains(fn ($a) => in_array($a->status, self::DILATATION_STATUSES, true))) {
+                throw new RuleException('الزائر في التمدد، لا يمكن التراجع', 422);
+            }
+
+            foreach ($active as $next) {
+                $this->setWaiting($next);
+            }
+
+            $doctorId = $group->first()->doctor_id;
+            $withDoctor = $doctorId && !$this->doctorBusy($doctorId);
+
+            // Reversed: each one takes the head of the queue, so the first stays first
+            foreach ($group->reverse() as $a) {
+                if ($withDoctor) {
+                    $a->status = 'Entered';
+                    $a->completed_at = null;
+                    $a->visit_seconds = null;
+                    $a->save();
+                } else {
+                    $this->clearVisit($a);
+                    $a->status = 'Present';
+                    $this->placeInQueue($a, 1, (bool) $a->is_special);
+                }
+            }
+
+            return $withDoctor;
+        });
+    }
+
+    /**
      * Other patients of the same family (same phone, last 9 digits) with an
      * appointment in this event today. Those queued in the same specialty can
      * enter together; the others are returned with the reason they can't.

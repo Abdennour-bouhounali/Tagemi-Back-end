@@ -1194,7 +1194,7 @@ private function handleMedicalDocuments(Request $request, $patientId)
      */
     public function destroy(Request $request, Appointment $appointment, QueueService $queues)
 {
-    // Reception: only before the patient is checked in, and the patient keeps one specialty
+    // Reception: anything but a finished exam (a patient with a doctor or in dilatation: beforeDelete)
     if ($request->user()->hasRole(User::ROLE_RECIPIENT_ADMIN)) {
         $this->assertReceptionMayDelete($appointment);
     }
@@ -1467,15 +1467,9 @@ private function handleMedicalDocuments(Request $request, $patientId)
      */
     private function assertReceptionMayDelete(Appointment $appointment): void
     {
-        $all = Appointment::where('event_id', $appointment->event_id)
-            ->where('patient_id', $appointment->patient_id)
-            ->get(['id', 'status']);
-
-        if ($all->contains(fn ($a) => $a->status !== 'Pending')) {
-            throw new RuleException('سُجّل حضور الزائر: الحذف بعد الحضور من صلاحية المشرف العام أو مشرف الحالات الخاصة', 403);
-        }
-        if ($all->count() <= 1) {
-            throw new RuleException('هذا آخر تخصص للزائر، لا يحذفه مسؤول الاستقبال', 403);
+        // A finished exam is a real visit: deleting it would change the statistics
+        if ($appointment->status === 'Completed') {
+            throw new RuleException('أنهى الزائر فحص هذا التخصص: حذفه من صلاحية المشرف العام أو مشرف الحالات الخاصة', 403);
         }
     }
 
