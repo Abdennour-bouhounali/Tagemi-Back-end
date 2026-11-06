@@ -706,6 +706,57 @@ class QueueService
     }
 
     /**
+     * «تبديل التخصص»: the patient moves to another specialty they booked for
+     * today. The one they leave goes back on hold, so they return to it later
+     * (at the end of its queue); no new appointment is created. They join the
+     * end of the new queue, behind those already there; a special case still
+     * goes to the priority block.
+     */
+    public function switchSpecialty(Appointment $current, int $targetId): Appointment
+    {
+        return DB::transaction(function () use ($current, $targetId) {
+            $todays = $this->todaysAppointments($current->event_id, $current->patient_id);
+            $target = $todays->firstWhere('id', $targetId);
+            $current = $todays->firstWhere('id', $current->id);
+
+            if (!$current || !$target || $current->id === $target->id) {
+                throw new RuleException('هذا التخصص ليس من مواعيد الزائر اليوم', 422);
+            }
+            $this->assertStatus($current, [...self::QUEUE_STATUSES, 'Entered'], 'الزائر ليس في قائمة الانتظار');
+            if ($blocker = $this->switchBlocker($target)) {
+                throw new RuleException($blocker, 409);
+            }
+
+            // This visit was not a completed examination
+            $this->clearVisit($current);
+            $this->setWaiting($current);
+            $target->status = 'Present';
+            $this->placeInQueue($target, null, (bool) $target->is_special);
+
+            return $target->fresh();
+        });
+    }
+
+    /** Why a patient can't switch to this booked specialty now; null when they can. */
+    public function switchBlocker(Appointment $target): ?string
+    {
+        if ($target->status === 'Completed') {
+            return 'أنهى الفحص في هذا التخصص';
+        }
+        if (!$this->isToday($target)) {
+            return 'موعده في يوم آخر';
+        }
+        if ($target->status !== 'Waiting') {
+            return 'الزائر ليس في انتظار هذا التخصص';
+        }
+        if (!$this->isOpen($target->event_specialty_id)) {
+            return 'هذا التخصص مغلق حالياً';
+        }
+
+        return $this->capacity($target->event_specialty_id)['full'] ? self::FULL_MESSAGE : null;
+    }
+
+    /**
      * Queue handling after reception transferred an appointment to another
      * specialty. Only today's appointments take part in the queue.
      */

@@ -314,6 +314,55 @@ class WaitingListController extends Controller
         ]);
     }
 
+    /** The patient's other booked specialties, for «تبديل التخصص»; those they can't move to say why. */
+    public function switchOptions($id)
+    {
+        $appointment = Appointment::findOrFail($id);
+
+        $options = Appointment::with(['day:id,day_date', 'eventSpecialty:id,specialty_id', 'eventSpecialty.specialty:id,name'])
+            ->where('event_id', $appointment->event_id)
+            ->where('patient_id', $appointment->patient_id)
+            ->whereKeyNot($appointment->id)
+            ->get()
+            ->map(function (Appointment $other) {
+                $blocker = $this->queues->switchBlocker($other);
+
+                return [
+                    'appointment_id' => $other->id,
+                    'name' => $other->eventSpecialty?->specialty?->name ?? '',
+                    'status' => $other->status,
+                    'can_switch' => $blocker === null,
+                    'reason' => $blocker,
+                    'queue_length' => $this->queues->queue($other->event_specialty_id)->count(),
+                ];
+            })
+            ->sortByDesc('can_switch')
+            ->values();
+
+        return response()->json(['specialties' => $options]);
+    }
+
+    /** «تبديل التخصص»: the patient moves to the end of the queue of another specialty they booked. */
+    public function switchSpecialty(Request $request, $id)
+    {
+        $data = $request->validate(['appointment_id' => 'required|integer']);
+        $current = Appointment::with('eventSpecialty.specialty')->findOrFail($id);
+
+        $target = $this->queues->switchSpecialty($current, $data['appointment_id']);
+        $target->load('eventSpecialty.specialty');
+        $this->audit('switched_specialty', $current, ['to_appointment' => $target->id]);
+        AppointmentLog::record('specialty_switched', $target, [
+            'from' => $current->eventSpecialty?->specialty?->name,
+            'to' => $target->eventSpecialty?->specialty?->name,
+        ]);
+
+        return response()->json([
+            'message' => 'انتقل الزائر إلى ' . ($target->eventSpecialty?->specialty?->name ?? 'التخصص المختار'),
+            'appointment' => $target,
+            'position' => $this->queues->positionOf($target),
+        ]);
+    }
+
     /**
      * Super admin, visit day: open a specialty's queue for today when its
      * doctor is there (waiting patients are sent to it), or close it (no new

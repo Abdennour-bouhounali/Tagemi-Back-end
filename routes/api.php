@@ -282,6 +282,11 @@ Route::middleware('auth:sanctum')->group(function () {
             ->middleware('event.access:appointment,id');
         Route::post('/appointments/{id}/refer', [WaitingListController::class, 'refer'])
             ->middleware('event.access:appointment,id');
+        // «تبديل التخصص»: to another specialty the patient already booked
+        Route::get('/appointments/{id}/switch-options', [WaitingListController::class, 'switchOptions'])
+            ->middleware('event.access:appointment,id');
+        Route::post('/appointments/{id}/switch-specialty', [WaitingListController::class, 'switchSpecialty'])
+            ->middleware('event.access:appointment,id');
     });
     // Visit day dashboards: super admin and the organizer (viewer) of the event
     Route::middleware('role:super_admin')->group(function () {

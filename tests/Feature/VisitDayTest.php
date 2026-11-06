@@ -811,6 +811,164 @@ class VisitDayTest extends TestCase
         $this->postJson("/api/appointments/{$other['ids'][0]}/refer", ['event_specialty_id' => $d])->assertStatus(409);
     }
 
+    // --------------------------------------------------- switch specialty
+
+    public function test_switch_lists_the_other_booked_specialties_and_says_why_not(): void
+    {
+        [$a, $b, $c, $d] = $this->esIds();
+        $this->close($d);
+        DB::table('events')->where('id', $this->eventId)->update(['nbr_of_allowed_specialties' => 4]);
+        $p = $this->patient([[$a, 'today'], [$b, 'today'], [$c, 'tomorrow'], [$d, 'today']]);
+        $this->checkIn($p['patient_id']);
+        $this->patient([[$b, 'today']]); // someone else's booking is never listed
+
+        $options = collect($this->getJson("/api/appointments/{$p['ids'][0]}/switch-options")->assertOk()->json('specialties'))
+            ->keyBy('appointment_id');
+
+        $this->assertCount(3, $options);
+        $this->assertTrue($options[$p['ids'][1]]['can_switch']);
+        $this->assertNull($options[$p['ids'][1]]['reason']);
+        $this->assertSame('موعده في يوم آخر', $options[$p['ids'][2]]['reason']);
+        $this->assertSame('هذا التخصص مغلق حالياً', $options[$p['ids'][3]]['reason']);
+
+        $this->pass($p['ids'][0]);
+        $active = $p['ids'][1];
+        $options = collect($this->getJson("/api/appointments/{$active}/switch-options")->assertOk()->json('specialties'))->keyBy('appointment_id');
+        $this->assertSame('أنهى الفحص في هذا التخصص', $options[$p['ids'][0]]['reason']);
+    }
+
+    public function test_switch_moves_the_patient_last_and_keeps_the_old_specialty_for_later(): void
+    {
+        [$a, $b] = $this->esIds();
+        foreach (range(1, 4) as $i) {
+            $this->checkIn($this->patient([[$b, 'today']])['patient_id']);
+        }
+        $p = $this->patient([[$a, 'today'], [$b, 'today']]);
+        $behind = $this->patient([[$a, 'today']]);
+        $this->checkIn($p['patient_id']);
+        $this->checkIn($behind['patient_id']);
+        [$old, $new] = $p['ids'];
+        $this->assertSame('Present', $this->statusOf($old));
+        $this->assertSame('Waiting', $this->statusOf($new));
+
+        $this->postJson("/api/appointments/{$old}/switch-specialty", ['appointment_id' => $new])
+            ->assertOk()->assertJsonPath('position', 5);
+
+        $this->assertSame('Waiting', $this->statusOf($old));
+        $this->assertSame(0, Appointment::find($old)->orderList);
+        $this->assertSame('Present', $this->statusOf($new));
+        $this->assertSame($p['patient_id'], $this->queue($b)[4]);
+        $this->assertSame([1, 2, 3, 4, 5], app(QueueService::class)->queue($b)->pluck('orderList')->all());
+        $this->assertSame([1], app(QueueService::class)->queue($a)->pluck('orderList')->all());
+        $this->assertSame(2, Appointment::where('patient_id', $p['patient_id'])->count()); // no new booking
+
+        $log = DB::table('appointment_logs')->where('appointment_id', $new)->where('action', 'specialty_switched')->first();
+        $this->assertNotNull($log);
+        $this->assertNotNull($log->user_id);
+
+        // Examined there, they come back to the specialty they left
+        $this->pass($new);
+        $this->assertSame('Present', $this->statusOf($old));
+    }
+
+    public function test_switch_from_the_doctor_ends_the_visit_without_counting_it(): void
+    {
+        [$a, $b] = $this->esIds();
+        $p = $this->patient([[$a, 'today'], [$b, 'today']]);
+        $this->checkIn($p['patient_id']);
+        $doctor = $this->doctorFor($a);
+        $this->markArrived($doctor, $a);
+        $this->postJson('/api/waitinglist/enter', ['ids' => [$p['ids'][0]], 'doctor_id' => $doctor->id])->assertOk();
+
+        $this->postJson("/api/appointments/{$p['ids'][0]}/switch-specialty", ['appointment_id' => $p['ids'][1]])->assertOk();
+
+        $left = Appointment::find($p['ids'][0]);
+        $this->assertSame('Waiting', $left->status);
+        $this->assertNull($left->doctor_id);
+        $this->assertNull($left->entered_at);
+        $this->assertFalse(app(QueueService::class)->doctorBusy($doctor->id));
+    }
+
+    public function test_switch_refused_when_the_target_cannot_take_the_patient(): void
+    {
+        [$a, $b, $c, $d] = $this->esIds();
+        $this->close($d);
+        $p = $this->patient([[$a, 'today'], [$c, 'tomorrow'], [$d, 'today']]);
+        $stranger = $this->patient([[$b, 'today']]);
+        $this->checkIn($p['patient_id']);
+        $current = $p['ids'][0];
+
+        $this->postJson("/api/appointments/{$current}/switch-specialty", ['appointment_id' => $p['ids'][2]])->assertStatus(409); // closed
+        $this->postJson("/api/appointments/{$current}/switch-specialty", ['appointment_id' => $p['ids'][1]])->assertStatus(422); // another day
+        $this->postJson("/api/appointments/{$current}/switch-specialty", ['appointment_id' => $stranger['ids'][0]])->assertStatus(422); // not theirs
+        $this->postJson("/api/appointments/{$current}/switch-specialty", ['appointment_id' => $current])->assertStatus(422);
+        $this->postJson("/api/appointments/{$current}/switch-specialty", [])->assertStatus(422);
+
+        $this->assertSame('Present', $this->statusOf($current));
+        $this->assertSame('Pending', $this->statusOf($stranger['ids'][0]));
+    }
+
+    public function test_switch_refused_once_the_patient_left_the_queue(): void
+    {
+        [$a, $b] = $this->esIds();
+        $p = $this->patient([[$a, 'today'], [$b, 'today']]);
+        $this->checkIn($p['patient_id']);
+        [$active, $held] = $p['ids'];
+
+        // A second click on the same switch: the first one already moved them
+        $this->postJson("/api/appointments/{$active}/switch-specialty", ['appointment_id' => $held])->assertOk();
+        $this->postJson("/api/appointments/{$active}/switch-specialty", ['appointment_id' => $held])->assertStatus(422);
+        $this->assertSame('Present', $this->statusOf($held));
+        $this->assertSame([1], app(QueueService::class)->queue($b)->pluck('orderList')->all());
+
+        Appointment::whereKey($held)->update(['status' => 'Dilatation', 'orderList' => 0]);
+        $this->postJson("/api/appointments/{$held}/switch-specialty", ['appointment_id' => $active])->assertStatus(422);
+    }
+
+    public function test_special_patient_stays_in_the_priority_block_after_a_switch(): void
+    {
+        [$a, $b] = $this->esIds();
+        foreach (range(1, 4) as $i) {
+            $this->checkIn($this->patient([[$b, 'today']])['patient_id']);
+        }
+        $p = $this->patient([[$a, 'today'], [$b, 'today']]);
+        Appointment::whereIn('id', $p['ids'])->update(['is_special' => true]);
+        $this->checkIn($p['patient_id']);
+
+        $this->postJson("/api/appointments/{$p['ids'][0]}/switch-specialty", ['appointment_id' => $p['ids'][1]])
+            ->assertOk()->assertJsonPath('position', 1);
+        $this->assertTrue((bool) Appointment::find($p['ids'][1])->is_priority);
+    }
+
+    public function test_switch_is_for_the_officer_the_organizer_and_the_super_admin(): void
+    {
+        [$a, $b] = $this->esIds();
+        $p = $this->patient([[$a, 'today'], [$b, 'today']]);
+        $this->checkIn($p['patient_id']);
+        [$first, $second] = $p['ids'];
+
+        foreach ([User::ROLE_RECIPIENT_ADMIN, User::ROLE_DOCTOR, User::ROLE_PATIENT_MANAGER, User::ROLE_SPECIAL_ADMIN] as $role) {
+            Sanctum::actingAs($this->staff($role));
+            $this->getJson("/api/appointments/{$first}/switch-options")->assertForbidden();
+            $this->postJson("/api/appointments/{$first}/switch-specialty", ['appointment_id' => $second])->assertForbidden();
+        }
+
+        // An officer of another event
+        $otherEvent = DB::table('events')->insertGetId(['name' => 'Other', 'date' => QueueService::today(), 'is_active' => 1, 'is_archived' => 0, 'nbr_of_allowed_specialties' => 3]);
+        $outsider = $this->staff(User::ROLE_CHECK_ADMIN);
+        $outsider->forceFill(['event_id' => $otherEvent])->save();
+        Sanctum::actingAs($outsider);
+        $this->postJson("/api/appointments/{$first}/switch-specialty", ['appointment_id' => $second])->assertForbidden();
+
+        // Each allowed role switches the patient, there and back
+        foreach ([User::ROLE_CHECK_ADMIN, User::ROLE_ORGANIZER, User::ROLE_SUPER_ADMIN] as $role) {
+            Sanctum::actingAs($this->staff($role));
+            $this->getJson("/api/appointments/{$first}/switch-options")->assertOk();
+            $this->postJson("/api/appointments/{$first}/switch-specialty", ['appointment_id' => $second])->assertOk();
+            [$first, $second] = [$second, $first];
+        }
+    }
+
     // ------------------------------------------------- booking safeguards
 
     private function book(string $name, array $esIds)

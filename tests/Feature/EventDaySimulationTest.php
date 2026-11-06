@@ -425,7 +425,7 @@ class EventDaySimulationTest extends TestCase
         $actions = [
             'checkin' => 22, 'arrive' => 5, 'leave' => 2, 'break' => 3, 'back' => 3, 'hall' => 2, 'toggle' => 1, 'enter' => 18, 'complete' => 16, 'cancel' => 2,
             'push' => 4, 'pushmany' => 1, 'special' => 2, 'front' => 2, 'dil_send' => 3, 'dil_recv' => 3, 'dil_done' => 3,
-            'refer' => 2, 'delete' => 1, 'reschedule' => 2, 'addspec' => 1, 'merge' => 2, 'family' => 3, 'organizer' => 2,
+            'refer' => 2, 'switch' => 2, 'delete' => 1, 'reschedule' => 2, 'addspec' => 1, 'merge' => 2, 'family' => 3, 'organizer' => 2,
         ];
         $bag = [];
         foreach ($actions as $name => $weight) {
@@ -561,6 +561,16 @@ class EventDaySimulationTest extends TestCase
                         $options = $this->as('officer', 'GET', "/api/appointments/{$a}/referral-options")->assertOk()->json('specialties');
                         if ($options) {
                             $this->as('officer', 'POST', "/api/appointments/{$a}/refer", ['event_specialty_id' => $pick($options)['event_specialty_id']])->assertOk();
+                        }
+                    }
+                    break;
+                case 'switch':
+                    $a = $pick($this->queueIds($es));
+                    if ($a) {
+                        $options = collect($this->as('officer', 'GET', "/api/appointments/{$a}/switch-options")->assertOk()->json('specialties'))
+                            ->where('can_switch', true)->values()->all();
+                        if ($options) {
+                            $this->as('officer', 'POST', "/api/appointments/{$a}/switch-specialty", ['appointment_id' => $pick($options)['appointment_id']])->assertOk();
                         }
                     }
                     break;
