@@ -202,6 +202,40 @@ class QueueService
         });
     }
 
+    /**
+     * «لم يأت بعد» on one finished specialty: the exam never happened, the
+     * patient's other exams stay. With other appointments today it goes back on
+     * hold (and to its queue if they are nowhere else); alone, the patient goes
+     * back to not arrived. Reception then may delete it.
+     *
+     * @throws RuleException
+     */
+    public function undoVisit(Appointment $appointment): void
+    {
+        $this->assertStatus($appointment, ['Completed'], 'هذا الموعد ليس منتهياً');
+        if (!$this->isToday($appointment)) {
+            throw new RuleException('يمكن إلغاء فحص اليوم فقط', 422);
+        }
+
+        DB::transaction(function () use ($appointment) {
+            $this->lockQueue($appointment->event_specialty_id);
+            $todays = $this->todaysAppointments($appointment->event_id, $appointment->patient_id);
+            $row = $todays->firstWhere('id', $appointment->id);
+            if (!$row || $row->status !== 'Completed') {
+                throw new RuleException('هذا الموعد ليس منتهياً', 409);
+            }
+
+            $this->clearVisit($row);
+            if ($todays->count() === 1) {
+                $row->checked_in_at = null;
+                $this->leaveQueue($row, 'Pending');
+                return;
+            }
+            $this->setWaiting($row);
+            $this->promoteNext($row->event_id, $row->patient_id);
+        });
+    }
+
     // ------------------------------------------------- specialty officer
 
     /**

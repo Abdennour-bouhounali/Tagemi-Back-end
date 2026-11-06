@@ -179,6 +179,8 @@ Route::middleware('auth:sanctum')->group(function () {
             ->middleware('event.access:event,eventId');
         Route::post('/events/{eventId}/check-in/undo', [AppointmentController::class, 'undoCheckIn'])
             ->whereNumber('eventId')->middleware('event.access:event,eventId');
+        Route::post('/appointments/{id}/undo-visit', [AppointmentController::class, 'undoVisit'])
+            ->whereNumber('id')->middleware('event.access:appointment,id');
         // Same name + phone registered twice: propose and merge into one patient number
         Route::get('/events/{eventId}/duplicates', [PatientMergeController::class, 'eventDuplicates'])
             ->whereNumber('eventId')->middleware('event.access:event,eventId');
@@ -209,7 +211,7 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     // Delete one specialty of a patient: super admin, special admin, and reception
-    // (reception: not a specialty the patient already finished)
+    // (reception: a finished specialty only after «لم يأت بعد» on it)
     Route::middleware('role:super_admin,special_admin,recipient_admin')->group(function () {
         Route::delete('/appointments/{appointment}', [AppointmentController::class, 'destroy'])
             ->middleware('event.access:appointment,appointment');
@@ -301,8 +303,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/events/{id}/doctor-visits', [WaitingListController::class, 'doctorVisits'])
             ->whereNumber('id')->middleware('event.access:event,id');
     });
-    // Presence desk: add a specialty (super admin, and reception accounts the
-    // super admin tagged: they may also go past the event's specialty limit);
+    // Presence desk: add a specialty up to the event's limit (super admin and
+    // reception; past the limit only accounts the super admin tagged);
     // type new registrations in a table (reception)
     Route::middleware('role:super_admin,recipient_admin')->group(function () {
         Route::post('/appointments/{id}/add-specialty', [AppointmentController::class, 'addSpecialty'])

@@ -21,6 +21,7 @@ class AdminAction extends Model
         'AppointmentController@checkInByNumber' => 'سجّل حضور زائر',
         'AppointmentController@updatePresence' => 'سجّل حضور زائر',
         'AppointmentController@undoCheckIn' => 'ألغى حضور زائر',
+        'AppointmentController@undoVisit' => 'ألغى فحصاً منتهياً',
         'AppointmentController@update' => 'عدّل بيانات موعد',
         'AppointmentController@destroy' => 'حذف موعداً',
         'AppointmentController@reschedule' => 'غيّر وقت موعد',

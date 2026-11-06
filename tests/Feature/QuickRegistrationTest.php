@@ -172,7 +172,48 @@ class QuickRegistrationTest extends TestCase
         $this->postJson("/api/events/{$this->eventId}/check-in", ['patient_id' => $ok['patient_id']])->assertOk();
     }
 
-    public function test_add_specialty_only_for_tagged_reception_and_past_the_limit(): void
+    public function test_reception_adds_a_specialty_under_the_limit_or_deletes_one_first(): void
+    {
+        [$a, $b, $c] = array_keys($this->es);
+        Sanctum::actingAs($this->staff(User::ROLE_RECIPIENT_ADMIN));
+        $p = $this->register([$this->row([$a])])->json('results.0');
+        $source = Appointment::where('patient_id', $p['patient_id'])->first();
+        $slot = function (int $es) {
+            return ['event_specialty_id' => $es, 'day_id' => DB::table('hours')->where('id', $this->es[$es][1])->value('day_id'), 'hour_id' => $this->es[$es][1]];
+        };
+
+        // Under the limit: any reception account, counted like a normal booking
+        $added = $this->postJson("/api/appointments/{$source->id}/add-specialty", $slot($b))->assertCreated();
+        $this->assertFalse(Appointment::find($added->json('appointment.id'))->beyond_limit);
+
+        // At the limit: refused, with the way out
+        $this->postJson("/api/appointments/{$source->id}/add-specialty", $slot($c))->assertStatus(422)
+            ->assertJsonFragment(['message' => 'هذا الحدث يسمح بـ 2 تخصص لكل زائر، والزائر حاجز العدد كاملاً. احذف موعداً أولاً ثم أضف التخصص']);
+        $this->assertSame(2, Appointment::where('patient_id', $p['patient_id'])->count());
+
+        // Delete one, then the new specialty fits
+        $this->deleteJson("/api/appointments/{$added->json('appointment.id')}")->assertOk();
+        $this->postJson("/api/appointments/{$source->id}/add-specialty", $slot($c))->assertCreated();
+        $this->assertEqualsCanonicalizing(
+            [$a, $c],
+            Appointment::where('patient_id', $p['patient_id'])->pluck('event_specialty_id')->all(),
+        );
+    }
+
+    public function test_an_event_with_one_specialty_does_not_suggest_deleting(): void
+    {
+        [$a, $b] = array_keys($this->es);
+        Sanctum::actingAs($this->staff(User::ROLE_RECIPIENT_ADMIN));
+        $p = $this->register([$this->row([$a])])->json('results.0');
+        DB::table('events')->where('id', $this->eventId)->update(['nbr_of_allowed_specialties' => 1]);
+        $source = Appointment::where('patient_id', $p['patient_id'])->first();
+        $day = DB::table('hours')->where('id', $this->es[$b][1])->value('day_id');
+
+        $this->postJson("/api/appointments/{$source->id}/add-specialty", ['event_specialty_id' => $b, 'day_id' => $day, 'hour_id' => $this->es[$b][1]])
+            ->assertStatus(422)->assertJsonPath('message', 'هذا الحدث يسمح بتخصص واحد لكل زائر');
+    }
+
+    public function test_only_tagged_reception_goes_past_the_limit(): void
     {
         [$a, $b, $c] = array_keys($this->es);
         Sanctum::actingAs($this->staff(User::ROLE_RECIPIENT_ADMIN));
@@ -181,7 +222,7 @@ class QuickRegistrationTest extends TestCase
         $tomorrowDay = DB::table('hours')->where('id', $this->es[$c][1])->value('day_id');
         $payload = ['event_specialty_id' => $c, 'day_id' => $tomorrowDay, 'hour_id' => $this->es[$c][1]];
 
-        $this->postJson("/api/appointments/{$source->id}/add-specialty", $payload)->assertForbidden();
+        $this->postJson("/api/appointments/{$source->id}/add-specialty", $payload)->assertStatus(422);
 
         Sanctum::actingAs($this->staff(User::ROLE_RECIPIENT_ADMIN, true));
         $res = $this->postJson("/api/appointments/{$source->id}/add-specialty", $payload)->assertCreated();

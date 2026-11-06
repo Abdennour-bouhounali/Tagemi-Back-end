@@ -83,6 +83,16 @@ public function undoCheckIn(Request $request, $eventId)
     return response()->json(['message' => 'الزائر #' . $data['patient_id'] . ' لم يأت بعد: أُلغي حضوره وخرج من الطابور']);
 }
 
+/** «لم يأت بعد» on one finished specialty, so that reception can delete it. */
+public function undoVisit($id, QueueService $queues)
+{
+    $appointment = Appointment::findOrFail($id);
+    $queues->undoVisit($appointment);
+    Log::info('Visit undone', ['appointment_id' => $appointment->id, 'by' => Auth::id()]);
+
+    return response()->json(['message' => 'أُلغي الفحص: لم يأت الزائر بعد إلى هذا التخصص']);
+}
+
 private function checkInResponse(?Appointment $first, int $patientId)
 {
     if (!$first) {
@@ -1308,11 +1318,8 @@ private function handleMedicalDocuments(Request $request, $patientId)
             'hour_id' => 'required|integer|exists:hours,id',
         ]);
 
-        // Reception: only the accounts the super admin tagged
+        // Up to the event's limit for all reception; past it only the accounts the super admin tagged
         $mayExceed = $request->user()->canExceedSpecialtyLimit();
-        if (!$mayExceed) {
-            throw new RuleException('إضافة تخصص متاحة للمدير العام ولمسؤولي الاستقبال المسموح لهم فقط', 403);
-        }
 
         return DB::transaction(function () use ($data, $id, $queues, $mayExceed) {
             $source = Appointment::with('event')->findOrFail($id);
@@ -1429,7 +1436,10 @@ private function handleMedicalDocuments(Request $request, $patientId)
         $limit = max(1, (int) ($event->nbr_of_allowed_specialties ?? 1));
         $beyondLimit = $booked->where('beyond_limit', false)->count() >= $limit;
         if ($beyondLimit && !$mayExceed) {
-            throw new RuleException("هذا الحدث يسمح بـ {$limit} تخصص لكل زائر، والزائر حاجز العدد كاملاً", 422);
+            // With one specialty allowed, deleting it would remove the patient: nothing to swap
+            throw new RuleException($limit > 1
+                ? "هذا الحدث يسمح بـ {$limit} تخصص لكل زائر، والزائر حاجز العدد كاملاً. احذف موعداً أولاً ثم أضف التخصص"
+                : 'هذا الحدث يسمح بتخصص واحد لكل زائر', 422);
         }
         if ($booked->contains('event_specialty_id', $eventSpecialtyId)) {
             throw new RuleException('الزائر حاجز هذا التخصص مسبقاً', 422);
@@ -1468,8 +1478,7 @@ private function handleMedicalDocuments(Request $request, $patientId)
     }
 
     /**
-     * Reception deletes a specialty only before the patient is checked in
-     * (every appointment still Pending), and never the patient's last one.
+     * Reception deletes any appointment; a finished exam only after «لم يأت بعد».
      *
      * @throws RuleException
      */
@@ -1477,7 +1486,7 @@ private function handleMedicalDocuments(Request $request, $patientId)
     {
         // A finished exam is a real visit: deleting it would change the statistics
         if ($appointment->status === 'Completed') {
-            throw new RuleException('أنهى الزائر فحص هذا التخصص: حذفه من صلاحية المشرف العام أو مشرف الحالات الخاصة', 403);
+            throw new RuleException('أنهى الزائر فحص هذا التخصص: اضغط «لم يأت بعد» على هذا الموعد أولاً ثم احذفه', 403);
         }
     }
 

@@ -674,6 +674,7 @@ class EventDaySimulationTest extends TestCase
             ['POST', "/api/waitinglist/move-to-front/{$a}", [], ['super', 'special']],
             ['DELETE', "/api/appointments/{$a}", [], ['super', 'special', 'reception']],
             ['POST', "/api/waitinglist/undo-complete/{$a}", [], ['super', 'officer', 'organizer']],
+            ['POST', "/api/appointments/{$a}/undo-visit", [], ['super', 'special', 'reception']],
             ['PATCH', "/api/appointments/{$a}/reschedule", [], ['super']],
             ['PATCH', "/api/event-specialties/{$eyes}/toggle-open", [], ['super']],
             ['POST', "/api/event-specialties/{$eyes}/doctors/{$doctor}/leave", [], ['super']],
@@ -1023,7 +1024,7 @@ class EventDaySimulationTest extends TestCase
         $this->assertSame(3, Appointment::where('patient_id', $p['patient_id'])->where('status', 'Completed')->count());
     }
 
-    /** Reception deletes any appointment, also after check-in and the last one; a finished exam stays. */
+    /** Reception deletes any appointment, also after check-in and the last one; a finished exam needs «لم يأت بعد» first. */
     public function test_reception_deletes_any_appointment_except_a_finished_exam(): void
     {
         [$eyes, $heart, $teeth] = [$this->esNamed('Eyes'), $this->esNamed('Heart'), $this->esNamed('Teeth')];
@@ -1050,7 +1051,7 @@ class EventDaySimulationTest extends TestCase
         $this->assertNull(Appointment::find($single['ids'][0]));
         $this->assertDatabaseHas('appointment_logs', ['appointment_id' => $single['ids'][0], 'action' => 'deleted', 'user_id' => $this->users['reception']->id]);
 
-        // With a doctor: refused for now; finished: refused, the super admin decides
+        // With a doctor: refused for now; finished: refused until «لم يأت بعد», or by the super admin
         $doctor = $this->doctors[$eyes][0];
         $this->as('officer', 'POST', '/api/waitinglist/enter', ['ids' => [$behind['ids'][0]], 'doctor_id' => $doctor->id])->assertOk();
         $this->as('reception', 'DELETE', "/api/appointments/{$behind['ids'][0]}")->assertStatus(422);
@@ -1059,6 +1060,61 @@ class EventDaySimulationTest extends TestCase
         $this->assertNotNull(Appointment::find($behind['ids'][0]));
         $this->as('super', 'DELETE', "/api/appointments/{$behind['ids'][0]}")->assertOk();
         $this->assertInvariants('after reception deletes');
+    }
+
+    /** A finished specialty: «لم يأت بعد» on it first, then reception deletes it; other exams stay. */
+    public function test_reception_undoes_a_finished_exam_then_deletes_it(): void
+    {
+        [$heart, $teeth] = [$this->esNamed('Heart'), $this->esNamed('Teeth')];
+        $this->arrive($this->doctors[$heart][0], $heart);
+        $this->arrive($this->doctors[$teeth][0], $teeth);
+        $p = $this->patient([[$heart, 'today'], [$teeth, 'today']]);
+        $this->checkIn($p['patient_id'])->assertOk();
+        [$first, $second] = Appointment::find($p['ids'][0])->status === 'Present' ? [$p['ids'][0], $p['ids'][1]] : [$p['ids'][1], $p['ids'][0]];
+        $this->passed($p, $first, $this->doctors[Appointment::find($first)->event_specialty_id][0]);
+        $this->passed($p, $second, $this->doctors[Appointment::find($second)->event_specialty_id][0]);
+        $firstEs = Appointment::find($first)->event_specialty_id;
+
+        $this->as('reception', 'DELETE', "/api/appointments/{$first}")->assertForbidden();
+
+        $this->as('reception', 'POST', "/api/appointments/{$first}/undo-visit")->assertOk();
+        $row = Appointment::find($first);
+        $this->assertSame('Present', $row->status);
+        $this->assertNull($row->doctor_id);
+        $this->assertNull($row->completed_at);
+        $this->assertNull($row->visit_seconds);
+        $this->assertSame([$first], $this->queueIds($firstEs));
+        $this->assertSame('Completed', Appointment::find($second)->status);
+        $this->assertInvariants('after undo visit');
+
+        $this->as('reception', 'DELETE', "/api/appointments/{$first}")->assertOk();
+        $this->assertNull(Appointment::find($first));
+        $this->assertSame([], $this->queueIds($firstEs));
+        $this->assertSame('Completed', Appointment::find($second)->status);
+        $this->assertInvariants('after deleting the undone exam');
+
+        // Only a finished appointment; a second click finds nothing
+        $this->as('reception', 'POST', "/api/appointments/{$second}/undo-visit")->assertOk();
+        $this->as('reception', 'POST', "/api/appointments/{$second}/undo-visit")->assertStatus(422);
+    }
+
+    /** The patient's only appointment today: back to not arrived, a new check-in works. */
+    public function test_undo_visit_of_the_only_appointment_today_means_not_arrived(): void
+    {
+        $teeth = $this->esNamed('Teeth');
+        $doctor = $this->doctors[$teeth][0];
+        $this->arrive($doctor, $teeth);
+        $p = $this->patient([[$teeth, 'today']]);
+        $this->checkIn($p['patient_id'])->assertOk();
+        $this->passed($p, $p['ids'][0], $doctor);
+
+        $this->as('reception', 'POST', "/api/appointments/{$p['ids'][0]}/undo-visit")->assertOk();
+
+        $row = Appointment::find($p['ids'][0]);
+        $this->assertSame('Pending', $row->status);
+        $this->assertNull($row->checked_in_at);
+        $this->assertInvariants('after undo visit of the only appointment');
+        $this->checkIn($p['patient_id'])->assertOk();
     }
 
     /** Puts a checked-in patient at the head of $esId with $doctor, then «إجتاز». */
