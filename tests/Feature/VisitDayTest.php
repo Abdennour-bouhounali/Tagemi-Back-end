@@ -1017,7 +1017,7 @@ class VisitDayTest extends TestCase
     }
 
     /** Organizer: live statistics «أثناء الحدث» only (and the public hall screen), changes nothing. */
-    public function test_organizer_sees_only_live_statistics_and_changes_nothing(): void
+    public function test_organizer_runs_the_specialties_and_nothing_else(): void
     {
         [$a] = $this->esIds();
         $p = $this->patient([[$a, 'today']]);
@@ -1033,21 +1033,32 @@ class VisitDayTest extends TestCase
         $this->getJson("/api/events/{$this->eventId}/appointment-distribution")->assertOk();
         $this->getJson("/api/events/{$this->eventId}/doctor-visits")->assertOk();
         $this->getJson("/api/public/waitinglist?event_id={$this->eventId}")->assertOk();
-        // No specialty lists, presence desk or doctors' board
-        $this->getJson("/api/events/{$this->eventId}/stations")->assertForbidden();
-        $this->getJson("/api/waitinglist/GetWaitingListBySpeciality/{$this->eventId}/{$specialtyId}")->assertForbidden();
-        $this->getJson("/api/event-specialties/{$a}/doctors-present")->assertForbidden();
-        $this->getJson("/api/event-specialties/{$a}/dilatation-room")->assertForbidden();
+        // The specialties, like the officer
+        $this->getJson("/api/events/{$this->eventId}/stations")->assertOk();
+        $this->getJson("/api/waitinglist/GetWaitingListBySpeciality/{$this->eventId}/{$specialtyId}")->assertOk();
+        $this->getJson("/api/event-specialties/{$a}/doctors-present")->assertOk();
+        // No presence desk or doctors' board
         $this->getJson("/api/events/{$this->eventId}/doctors-today")->assertForbidden();
         $this->getJson("/api/events/{$this->eventId}/duplicates")->assertForbidden();
         $this->getJson("/api/appointments/search?event_id={$this->eventId}&q=1")->assertForbidden();
 
-        $this->enter([$p['ids'][0]], $doctor)->assertForbidden();
-        $this->postJson("/api/waitinglist/Commingsoon/{$p['ids'][0]}")->assertForbidden();
+        // Reception's and the super admin's work stays closed
         $this->postJson("/api/events/{$this->eventId}/check-in", ['patient_id' => 1])->assertForbidden();
         $this->postJson("/api/event-specialties/{$a}/doctors/{$doctor->id}/arrive")->assertForbidden();
+        $this->postJson("/api/event-specialties/{$a}/doctors/{$doctor->id}/break")->assertForbidden();
+        $this->postJson("/api/event-specialties/{$a}/doctors/{$doctor->id}/leave")->assertForbidden();
         $this->patchJson("/api/event-specialties/{$a}/toggle-open")->assertForbidden();
+        $this->patchJson("/api/appointments/{$p['ids'][0]}/reschedule")->assertForbidden();
+        $this->deleteJson("/api/appointments/{$p['ids'][0]}")->assertForbidden();
+        $this->postJson("/api/waitinglist/Special/{$p['ids'][0]}")->assertForbidden();
         $this->assertSame('Present', $this->statusOf($p['ids'][0]));
+
+        // إنزال, then دخل and إجتاز with a doctor who arrived
+        $this->postJson("/api/waitinglist/Commingsoon/{$p['ids'][0]}")->assertOk();
+        $this->assertSame('Commingsoon', $this->statusOf($p['ids'][0]));
+        $this->enter([$p['ids'][0]], $doctor)->assertOk();
+        $this->postJson("/api/waitinglist/Complete/{$p['ids'][0]}")->assertOk();
+        $this->assertSame('Completed', $this->statusOf($p['ids'][0]));
 
         // Another event: refused
         $other = DB::table('events')->insertGetId(['name' => 'Other', 'date' => QueueService::today(), 'is_active' => 1, 'is_archived' => 0, 'nbr_of_allowed_specialties' => 3]);

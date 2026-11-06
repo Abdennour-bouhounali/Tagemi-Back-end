@@ -228,17 +228,17 @@ Route::middleware('auth:sanctum')->group(function () {
             ->middleware('event.access:event,event_id');
     });
 
-    // Specialty officer: register an existing patient in this specialty (past the
-    // event's specialty limit only when the super admin switched it on for the event)
-    Route::middleware('role:super_admin,check_admin')->group(function () {
+    // Specialty officer and organizer: register an existing patient in this specialty (past
+    // the event's specialty limit only when the super admin switched it on for the event)
+    Route::middleware('role:super_admin,check_admin,organizer_acts')->group(function () {
         Route::get('/event-specialties/{id}/register-patient/{patientId}', [AppointmentController::class, 'registerInSpecialtyPreview'])
             ->whereNumber('id')->whereNumber('patientId')->middleware('event.access:event_specialty,id');
         Route::post('/event-specialties/{id}/register-patient', [AppointmentController::class, 'registerInSpecialty'])
             ->whereNumber('id')->middleware('event.access:event_specialty,id');
     });
 
-    // Specialty queue (check admin), patient manager and doctors
-    Route::middleware('role:super_admin,check_admin,doctor,patient_manager')->group(function () {
+    // Specialty queue (check admin, organizer), patient manager and doctors
+    Route::middleware('role:super_admin,check_admin,doctor,patient_manager,organizer')->group(function () {
         Route::get('/events/{eventId}/stations', [WaitingListController::class, 'stations'])
             ->middleware('event.access:event,eventId');
         Route::get('waitinglist/GetWaitingListBySpeciality/{eventId}/{specialityId}', [WaitingListController::class, 'GetWaitingListBySpeciality'])
@@ -250,17 +250,17 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/event-specialties/{id}/dilatation-room', [WaitingListController::class, 'dilatationRoom'])
             ->middleware('event.access:event_specialty,id');
     });
-    Route::middleware('role:super_admin,check_admin,doctor')->group(function () {
+    Route::middleware('role:super_admin,check_admin,doctor,organizer_acts')->group(function () {
         Route::post('/appointment/addComment', [AppointmentController::class, 'addComment'])
             ->middleware('event.access:appointment,appointment_id');
     });
-    // Push down (إنزال): super admin and the patient manager (not the specialty officer since 2026-11-05)
-    Route::middleware('role:super_admin,patient_manager')->group(function () {
+    // Push down (إنزال): super admin, patient manager and organizer (not the specialty officer since 2026-11-05)
+    Route::middleware('role:super_admin,patient_manager,organizer_acts')->group(function () {
         Route::post('waitinglist/Commingsoon/{id}', [WaitingListController::class, 'Commingsoon'])
             ->middleware('event.access:appointment,id');
         Route::post('/waitinglist/push-down', [WaitingListController::class, 'pushDownMany']); // event checked per appointment
     });
-    Route::middleware('role:super_admin,check_admin')->group(function () {
+    Route::middleware('role:super_admin,check_admin,organizer_acts')->group(function () {
         // دخل (with the chosen doctor; a family enters together), then إجتاز
         Route::post('/waitinglist/enter', [WaitingListController::class, 'enter']); // event checked per appointment
         Route::post('waitinglist/cancel-enter/{id}', [WaitingListController::class, 'cancelEnter'])

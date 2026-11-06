@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Appointment;
 use App\Models\Doctor;
+use App\Models\DoctorAttendance;
 use App\Models\User;
 use App\Services\QueueService;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
@@ -16,9 +17,10 @@ use Tests\TestCase;
  * A whole visit day played through the API by every staff role: reception
  * check-ins before and after the doctors arrive, officers' دخل / إجتاز,
  * dilatation, referrals, special cases, push downs, super admin changes,
- * duplicate merges, doctors leaving. Queue invariants are checked after
- * every action.
+ * duplicate merges, doctors leaving, taking breaks and coming back. Queue and
+ * attendance invariants are checked after every action.
  *   DB_DATABASE=tagemi_security_test php artisan test --filter=EventDaySimulationTest
+ * SIM_SEEDS=50 plays more random days than the 10 run in CI.
  */
 class EventDaySimulationTest extends TestCase
 {
@@ -150,10 +152,19 @@ class EventDaySimulationTest extends TestCase
         return app(QueueService::class)->queue($esId)->pluck('id')->all();
     }
 
+    /** Here and able to see patients (not on a break). */
     private function presentDoctors(int $esId): array
     {
         $ids = DB::table('doctor_attendances')->where('day_id', $this->es[$esId]['today'][0])
-            ->whereNotNull('arrived_at')->whereNull('left_at')->pluck('doctor_id')->all();
+            ->whereNotNull('arrived_at')->whereNull('left_at')->whereNull('on_break_since')->pluck('doctor_id')->all();
+
+        return array_values(array_filter($this->doctors[$esId], fn ($d) => in_array($d->id, $ids)));
+    }
+
+    private function doctorsOnBreak(int $esId): array
+    {
+        $ids = DB::table('doctor_attendances')->where('day_id', $this->es[$esId]['today'][0])
+            ->whereNotNull('on_break_since')->pluck('doctor_id')->all();
 
         return array_values(array_filter($this->doctors[$esId], fn ($d) => in_array($d->id, $ids)));
     }
@@ -222,6 +233,29 @@ class EventDaySimulationTest extends TestCase
         foreach ($today->where('status', 'Entered')->groupBy('doctor_id') as $doctorId => $rows) {
             if (!$doctorId || $rows->pluck('visit_group')->unique()->count() !== 1 || $rows->contains(fn ($a) => !$a->entered_at)) {
                 $problems[] = "doctor {$doctorId} has inconsistent visits: " . $rows->pluck('visit_group', 'id')->toJson();
+            }
+        }
+
+        // Each attendance agrees with its periods: one open period exactly while working
+        $dayIds = collect($this->es)->map(fn ($es) => $es['today'][0])->values();
+        foreach (DoctorAttendance::with('periods')->whereIn('day_id', $dayIds)->get() as $att) {
+            $periods = $att->periods->sortBy('id')->values();
+            $open = $periods->whereNull('left_at')->count();
+            $label = "attendance {$att->id} (doctor {$att->doctor_id})";
+            if ($open !== ($att->isWorking() ? 1 : 0)) {
+                $problems[] = "{$label}: {$open} open periods, working=" . json_encode($att->isWorking());
+            }
+            if ($att->arrived_at && $periods->isEmpty()) {
+                $problems[] = "{$label}: arrived with no period";
+            }
+            if ($att->left_at !== null && $att->on_break_since !== null) {
+                $problems[] = "{$label}: left and on a break at once";
+            }
+            if ($att->isOnBreak() !== (bool) $periods->last()?->ended_by_break) {
+                $problems[] = "{$label}: on_break does not match the last period";
+            }
+            if ($periods->slice(0, -1)->contains(fn ($p) => $p->left_at === null)) {
+                $problems[] = "{$label}: an earlier period is still open";
             }
         }
 
@@ -359,7 +393,12 @@ class EventDaySimulationTest extends TestCase
 
     public static function seeds(): array
     {
-        return collect([11, 2026, 777, 4, 99, 1, 31, 404, 5150, 8080])->mapWithKeys(fn ($n) => ["seed {$n}" => [$n]])->all();
+        $seeds = [11, 2026, 777, 4, 99, 1, 31, 404, 5150, 8080];
+        for ($n = count($seeds); $n < (int) (getenv('SIM_SEEDS') ?: 0); $n++) {
+            $seeds[] = 10000 + $n;
+        }
+
+        return collect($seeds)->mapWithKeys(fn ($n) => ["seed {$n}" => [$n]])->all();
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('seeds')]
@@ -384,7 +423,7 @@ class EventDaySimulationTest extends TestCase
         $ids = fn () => QueueService::scopeToday(Appointment::query())->where('event_id', $this->eventId);
 
         $actions = [
-            'checkin' => 22, 'arrive' => 5, 'leave' => 2, 'toggle' => 1, 'enter' => 18, 'complete' => 16, 'cancel' => 2,
+            'checkin' => 22, 'arrive' => 5, 'leave' => 2, 'break' => 3, 'back' => 3, 'hall' => 2, 'toggle' => 1, 'enter' => 18, 'complete' => 16, 'cancel' => 2,
             'push' => 4, 'pushmany' => 1, 'special' => 2, 'front' => 2, 'dil_send' => 3, 'dil_recv' => 3, 'dil_done' => 3,
             'refer' => 2, 'delete' => 1, 'reschedule' => 2, 'addspec' => 1, 'merge' => 2, 'family' => 3, 'organizer' => 2,
         ];
@@ -414,6 +453,32 @@ class EventDaySimulationTest extends TestCase
                         $this->as('super', 'POST', "/api/event-specialties/{$es}/doctors/{$d->id}/leave")->assertOk();
                     }
                     break;
+                case 'break':
+                    $d = $pick($this->presentDoctors($es));
+                    if ($d) {
+                        $before = DB::table('event_specialties')->where('id', $es)->value('opened_on');
+                        $this->as('super', 'POST', "/api/event-specialties/{$es}/doctors/{$d->id}/break")->assertOk();
+                        $this->assertSame($before, DB::table('event_specialties')->where('id', $es)->value('opened_on'), 'a break changed the queue');
+                        $head = $this->queueIds($es)[0] ?? null;
+                        if ($head) {
+                            $this->as('officer', 'POST', '/api/waitinglist/enter', ['ids' => [$head], 'doctor_id' => $d->id])->assertStatus($this->busy($d) ? 409 : 422);
+                        }
+                    }
+                    break;
+                case 'back':
+                    $d = $pick($this->doctorsOnBreak($es));
+                    if ($d) {
+                        // Most come back, some go home straight from the break
+                        $this->as('super', 'POST', "/api/event-specialties/{$es}/doctors/{$d->id}/" . (mt_rand(0, 3) ? 'arrive' : 'leave'))->assertOk();
+                    }
+                    break;
+                case 'hall':
+                    $hall = $this->as('super', 'GET', "/api/public/waitinglist?event_id={$this->eventId}")->assertOk();
+                    $sid = DB::table('event_specialties')->where('id', $es)->value('specialty_id');
+                    $free = count(array_filter($this->presentDoctors($es), fn ($d) => !$this->busy($d)));
+                    $invited = collect($hall->json("data.{$sid}"))->where('invited', true)->count();
+                    $this->assertLessThanOrEqual($free, $invited, "hall invites more visitors than free doctors (seed {$seed})");
+                    break;
                 case 'toggle':
                     // Reopening needs a present doctor
                     $expected = $this->accepts($es) || DB::table('event_specialties')->where('id', $es)->whereDate('opened_on', QueueService::today())->exists() || $this->presentDoctors($es) ? 200 : 422;
@@ -423,7 +488,7 @@ class EventDaySimulationTest extends TestCase
                     $d = $pick($this->arrivedDoctors($es));
                     $head = $this->queueIds($es)[mt_rand(0, 1)] ?? null;
                     if ($d && $head) {
-                        $expected = $this->busy($d) ? 409 : 200;
+                        $expected = $this->busy($d) ? 409 : (in_array($d, $this->doctorsOnBreak($es)) ? 422 : 200);
                         $this->as('officer', 'POST', '/api/waitinglist/enter', ['ids' => [$head], 'doctor_id' => $d->id])->assertStatus($expected);
                     }
                     break;
@@ -533,10 +598,17 @@ class EventDaySimulationTest extends TestCase
                 case 'organizer':
                     $a = $pick($this->queueIds($es));
                     if ($a) {
-                        $this->as('organizer', 'POST', "/api/waitinglist/Complete/{$a}")->assertStatus(403);
+                        // Runs the specialties (below), not the presence desk or the patient list
                         $this->as('organizer', 'POST', "/api/events/{$this->eventId}/check-in", ['patient_id' => 1])->assertStatus(403);
+                        $this->as('organizer', 'POST', "/api/waitinglist/Commingsoon/{$a}", ['places' => 2])->assertOk();
                     }
-                    $this->as('organizer', 'GET', "/api/events/{$this->eventId}/stations")->assertStatus(403);
+                    $d = $pick(array_values(array_filter($this->presentDoctors($es), fn ($d) => !$this->busy($d))));
+                    $head = $this->queueIds($es)[0] ?? null;
+                    if ($d && $head) {
+                        $this->as('organizer', 'POST', '/api/waitinglist/enter', ['ids' => [$head], 'doctor_id' => $d->id])->assertOk();
+                        $this->as('organizer', 'POST', "/api/waitinglist/Complete/{$head}")->assertOk();
+                    }
+                    $this->as('organizer', 'GET', "/api/events/{$this->eventId}/stations")->assertOk();
                     $this->as('organizer', 'GET', "/api/events/{$this->eventId}/doctor-visits")->assertOk();
                     break;
             }
@@ -585,16 +657,16 @@ class EventDaySimulationTest extends TestCase
         // [method, uri, body, roles allowed]
         $cases = [
             ['POST', "/api/events/{$this->eventId}/check-in", ['patient_id' => 1], ['super', 'special', 'reception']],
-            ['POST', "/api/waitinglist/Commingsoon/{$a}", [], ['super', 'manager']],
-            ['POST', '/api/waitinglist/push-down', ['appointment_ids' => [$a]], ['super', 'manager']],
-            ['POST', '/api/waitinglist/enter', ['ids' => [$a], 'doctor_id' => $doctor], ['super', 'officer']],
+            ['POST', "/api/waitinglist/Commingsoon/{$a}", [], ['super', 'manager', 'organizer']],
+            ['POST', '/api/waitinglist/push-down', ['appointment_ids' => [$a]], ['super', 'manager', 'organizer']],
+            ['POST', '/api/waitinglist/enter', ['ids' => [$a], 'doctor_id' => $doctor], ['super', 'officer', 'organizer']],
             ['POST', "/api/waitinglist/Special/{$a}", [], ['super', 'special']],
             ['POST', "/api/waitinglist/move-to-front/{$a}", [], ['super', 'special']],
             ['DELETE', "/api/appointments/{$a}", [], ['super', 'special']],
             ['PATCH', "/api/appointments/{$a}/reschedule", [], ['super']],
             ['PATCH', "/api/event-specialties/{$eyes}/toggle-open", [], ['super']],
             ['POST', "/api/event-specialties/{$eyes}/doctors/{$doctor}/leave", [], ['super']],
-            ['GET', "/api/events/{$this->eventId}/stations", [], ['super', 'officer', 'manager']],
+            ['GET', "/api/events/{$this->eventId}/stations", [], ['super', 'officer', 'manager', 'organizer']],
             ['GET', "/api/events/{$this->eventId}/doctors-today", [], ['super']],
             ['GET', "/api/events/{$this->eventId}/duplicates", [], ['super', 'special', 'reception']],
             ['GET', "/api/appointments/event-statistics/{$this->eventId}", [], ['super', 'special', 'reception', 'organizer']],
@@ -792,11 +864,14 @@ class EventDaySimulationTest extends TestCase
         $doctorUser->forceFill(['role_id' => 6, 'event_id' => $this->eventId])->save();
         $this->users['doctor'] = $doctorUser;
 
-        $this->as('organizer', 'GET', "/api/event-specialties/{$eyes}/dilatation-room")->assertStatus(403);
         foreach (['doctor', 'manager'] as $who) {
             $this->as($who, 'GET', "/api/event-specialties/{$eyes}/dilatation-room")->assertOk()->assertJsonCount(1, 'coming');
             $this->as($who, 'POST', "/api/waitinglist/DilatationArrived/{$p['ids'][0]}")->assertStatus(403);
         }
+
+        // The organizer runs it like the officer
+        $this->as('organizer', 'GET', "/api/event-specialties/{$eyes}/dilatation-room")->assertOk()->assertJsonCount(1, 'coming');
+        $this->as('organizer', 'POST', "/api/waitinglist/DilatationArrived/{$p['ids'][0]}")->assertOk();
     }
 
     /** A relative who comes late joins the visit in progress; they pass together, time split from the start. */
@@ -994,7 +1069,7 @@ class EventDaySimulationTest extends TestCase
         $this->assertSame(1, DB::table('appointment_logs')->where('appointment_id', $new->id)->where('action', 'specialty_added')->count());
 
         // Other roles can't use it; unknown number is a clean 404
-        foreach (['reception', 'manager', 'organizer', 'special'] as $who) {
+        foreach (['reception', 'manager', 'special'] as $who) {
             $this->as($who, 'POST', "/api/event-specialties/{$teeth}/register-patient", ['patient_id' => $one['patient_id']])->assertForbidden();
         }
         $this->as('officer', 'POST', "/api/event-specialties/{$teeth}/register-patient", ['patient_id' => 999999])->assertNotFound();

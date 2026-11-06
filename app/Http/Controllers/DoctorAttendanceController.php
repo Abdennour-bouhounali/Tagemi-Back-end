@@ -122,6 +122,7 @@ class DoctorAttendanceController extends Controller
             }
         }
 
+        $doctors->each(fn ($doctor) => $this->ensureAttendance($day, $doctor));
         DB::transaction(function () use ($doctors, $day, $start, $end, $data) {
             foreach ($doctors as $doctor) {
                 if (!DoctorInterval::where('day_id', $day->id)->where('doctor_id', $doctor->id)->exists()) {
@@ -159,6 +160,7 @@ class DoctorAttendanceController extends Controller
         $eventSpecialty = EventSpecialty::findOrFail($eventSpecialtyId);
         $day = $this->scheduledToday($eventSpecialty, $doctor);
 
+        $this->ensureAttendance($day, $doctor);
         $fromBreak = DB::transaction(function () use ($day, $doctor) {
             $attendance = $this->attendance($day, $doctor);
             if ($attendance->isWorking()) {
@@ -288,6 +290,19 @@ class DoctorAttendanceController extends Controller
     {
         return DoctorAttendance::where('day_id', $day->id)->where('doctor_id', $doctor->id)->lockForUpdate()->first()
             ?? new DoctorAttendance(['day_id' => $day->id, 'doctor_id' => $doctor->id]);
+    }
+
+    /**
+     * The day's row exists before the transaction that locks it: locking a
+     * missing row takes a gap lock, and two first arrivals at once deadlock.
+     * Outside any transaction, or insertOrIgnore's shared lock stays held and
+     * deadlocks with the lock that follows.
+     */
+    private function ensureAttendance(Day $day, Doctor $doctor): void
+    {
+        DoctorAttendance::insertOrIgnore([
+            'day_id' => $day->id, 'doctor_id' => $doctor->id, 'created_at' => now(), 'updated_at' => now(),
+        ]);
     }
 
     private function intervalLabels($intervals): array

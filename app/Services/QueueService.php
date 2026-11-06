@@ -193,14 +193,15 @@ class QueueService
             if (!$attendance) {
                 throw new RuleException("الطبيب {$doctor->full_name} لم يُسجَّل وصوله اليوم", 422);
             }
-            if ($attendance->isOnBreak()) {
-                throw new RuleException("الطبيب {$doctor->full_name} في استراحة، سجّل عودته أولاً", 422);
-            }
             $current = self::scopeToday(Appointment::query())
                 ->where('doctor_id', $doctor->id)->where('status', 'Entered')
                 ->lockForUpdate()->first();
             if ($current && !$join) {
                 throw new RuleException("الطبيب {$doctor->full_name} مشغول مع زائر آخر، اضغط إجتاز أولاً", 409);
+            }
+            // A relative may still join the visit the doctor finishes before the break
+            if (!$current && $attendance->isOnBreak()) {
+                throw new RuleException("الطبيب {$doctor->full_name} في استراحة، سجّل عودته أولاً", 422);
             }
             if ($current && (int) $current->event_specialty_id !== $eventSpecialtyId) {
                 throw new RuleException("الطبيب {$doctor->full_name} مع زائر في تخصص آخر", 422);
