@@ -92,6 +92,7 @@ class AdminAction extends Model
         'UsefulController@startVisitDay' => 'بدأ يوم الزيارة',
         // Users, doctors, roles
         'UserController@update' => 'عدّل مستخدماً',
+        'UserController@changePassword' => 'غيّر كلمة مرور مستخدم',
         'UserController@destroy' => 'حذف مستخدماً',
         'UserController@assignEvent' => 'ربط مستخدماً بحدث',
         'UserController@unassignEvent' => 'فكّ ربط مستخدم بحدث',

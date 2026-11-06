@@ -209,12 +209,12 @@ public function index()
             'name' => 'sometimes|string|max:255',
             'email' => 'sometimes|email|unique:users,email,' . $userId,
             'phone' => 'sometimes|nullable|string|max:20',
-            'password' => 'sometimes|nullable|string|min:6',
+            'password' => 'prohibited', // PATCH /users/{id}/password
         ], [
             'name.max' => 'الاسم طويل جداً',
             'email.email' => 'البريد الإلكتروني غير صالح',
             'email.unique' => 'البريد الإلكتروني مستخدم بالفعل',
-            'password.min' => 'كلمة المرور يجب أن تكون 6 أحرف على الأقل',
+            'password.prohibited' => 'تُغيَّر كلمة المرور من «غيّر كلمة المرور»',
         ] + User::NAME_MESSAGES);
 
         if ($validator->fails()) {
@@ -248,16 +248,7 @@ public function index()
                 $updateData['phone'] = $request->phone;
             }
             
-            if ($request->filled('password')) {
-                $updateData['password'] = Hash::make($request->password);
-            }
-            
             $user->update($updateData);
-
-            if (isset($updateData['password'])) {
-                // Password changed by an admin: revoke the user's existing sessions
-                $user->tokens()->delete();
-            }
 
             return response()->json([
                 'message' => 'تم تحديث بيانات المستخدم بنجاح',
@@ -279,6 +270,32 @@ public function index()
                 'error' => config('app.debug') ? $e->getMessage() : 'خطأ داخلي'
             ], 500);
         }
+    }
+
+    /**
+     * Super admin: set a new password for any account. Nobody else can change a
+     * password, not even their own. PATCH /api/users/{id}/password
+     * {password, password_confirmation}
+     */
+    public function changePassword(Request $request, $userId)
+    {
+        $data = $request->validate([
+            'password' => 'required|string|min:8|max:255|confirmed',
+        ], [
+            'password.required' => 'اكتب كلمة المرور الجديدة',
+            'password.min' => 'كلمة المرور يجب أن تكون 8 أحرف على الأقل',
+            'password.max' => 'كلمة المرور طويلة جداً',
+            'password.confirmed' => 'كلمتا المرور غير متطابقتين',
+        ]);
+
+        $user = User::findOrFail($userId);
+        $user->update(['password' => Hash::make($data['password'])]);
+
+        // Signs the account out everywhere, except the session making the change
+        $keep = $user->is($request->user()) ? $request->user()->currentAccessToken()?->getKey() : null;
+        $user->tokens()->when($keep, fn ($tokens) => $tokens->whereKeyNot($keep))->delete();
+
+        return response()->json(['message' => 'تم تغيير كلمة المرور']);
     }
 
     /**

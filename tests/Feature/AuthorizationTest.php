@@ -110,6 +110,7 @@ class AuthorizationTest extends TestCase
         $me = $this->actingAsRole(User::ROLE_SIMPLE_USER);
 
         $this->putJson("/api/users/{$admin->id}", ['password' => 'hacked123'])->assertForbidden();
+        $this->patchJson("/api/users/{$admin->id}/password", ['password' => 'hacked123', 'password_confirmation' => 'hacked123'])->assertForbidden();
         $this->postJson("/api/users/{$me->id}/assign", ['role_id' => 1])->assertForbidden();
         $this->postJson('/api/role/ChangeRole', ['user_id' => $me->id, 'role' => 1])->assertForbidden();
         $this->getJson('/api/users')->assertForbidden();
@@ -147,7 +148,7 @@ class AuthorizationTest extends TestCase
         $target->createToken('auth');
         $this->actingAsRole(User::ROLE_SUPER_ADMIN);
 
-        $this->putJson("/api/users/{$target->id}", ['password' => 'newpassword1'])->assertOk();
+        $this->patchJson("/api/users/{$target->id}/password", ['password' => 'newpassword1', 'password_confirmation' => 'newpassword1'])->assertOk();
         $this->assertSame(0, $target->tokens()->count());
     }
 

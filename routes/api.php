@@ -454,6 +454,7 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::get('/event/{eventId}', [UserController::class, 'getByEvent']);
             Route::get('/{id}', [UserController::class, 'show']);
             Route::put('/{id}', [UserController::class, 'update']);
+            Route::patch('/{id}/password', [UserController::class, 'changePassword']);
             Route::patch('/{id}/specialty-limit', [UserController::class, 'setSpecialtyLimitOverride']);
             Route::delete('/{id}', [UserController::class, 'destroy']);
             Route::post('/{id}/assign', [UserController::class, 'assignEvent']);
