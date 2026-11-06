@@ -14,6 +14,7 @@ use App\Models\Specialty;
 use App\Models\User;
 use App\Services\TrainingEventService;
 use App\Services\DoctorScheduleService;
+use App\Services\QueueService;
 use App\Support\VisitStatistics;
 use App\Exceptions\RuleException;
 use App\Models\Day;
@@ -1481,6 +1482,9 @@ public function updateFull(Request $request, $id, DoctorScheduleService $schedul
                 Log::info("Deleted {$deletedEventSpecialties} event specialties from Event ID: {$event->id}");
             }
         }
+
+        // More visits planned for today's doctors means room in a full specialty
+        app(QueueService::class)->afterScheduleChange($event->id);
 
         DB::commit();
 

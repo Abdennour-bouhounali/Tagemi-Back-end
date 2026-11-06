@@ -1934,6 +1934,7 @@ public function transferSpecialty(Request $request, $id)
             DB::rollBack();
             return response()->json(['message' => 'الزائر مسجل في هذا التخصص مسبقاً'], 409);
         }
+        app(QueueService::class)->assertNotBookedUnderOtherNumber($appointment, (int) $validated['new_event_specialty_id']);
         
         // Get new event specialty
         $newEventSpecialty = EventSpecialty::with('specialty')->find($validated['new_event_specialty_id']);
@@ -2065,7 +2066,7 @@ public function transferSpecialty(Request $request, $id)
         $this->checkAndUpdateSaturation($newEventSpecialty);
 
         // Today: joins the new queue in 3rd place (or waits if busy elsewhere)
-        app(QueueService::class)->afterTransfer($appointment->fresh(), $oldStatus);
+        app(QueueService::class)->afterTransfer($appointment->fresh(), $oldStatus, $oldEventSpecialtyId);
 
         DB::commit();
 
@@ -2104,6 +2105,9 @@ public function transferSpecialty(Request $request, $id)
             'message' => 'خطأ في البيانات المدخلة',
             'errors' => $e->errors()
         ], 422);
+    } catch (RuleException $e) {
+        DB::rollBack();
+        throw $e;
     } catch (\Exception $e) {
         DB::rollBack();
         

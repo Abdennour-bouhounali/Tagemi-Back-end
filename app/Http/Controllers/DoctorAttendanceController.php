@@ -150,6 +150,8 @@ class DoctorAttendanceController extends Controller
             $sent = $result['sent'] + $result['moved'];
             $message .= '، وفُتح طابور التخصص' . ($sent > 0 ? "، أُرسل إليه {$sent} زائر" : '');
             Log::info('Specialty opened with added doctors', ['event_specialty_id' => $eventSpecialty->id, 'doctor_ids' => $doctors->pluck('id'), 'by' => Auth::id()] + $result);
+        } else {
+            $message .= $this->sendWaiting($eventSpecialty);
         }
 
         return response()->json(['message' => $message, 'is_open' => true]);
@@ -178,6 +180,8 @@ class DoctorAttendanceController extends Controller
             $sent = $result['sent'] + $result['moved'];
             $message .= '، وفُتح طابور التخصص' . ($sent > 0 ? "، أُرسل إليه {$sent} زائر" : '');
             Log::info('Specialty opened by doctor arrival', ['event_specialty_id' => $eventSpecialty->id, 'doctor_id' => $doctor->id, 'by' => Auth::id()] + $result);
+        } else {
+            $message .= $this->sendWaiting($eventSpecialty);
         }
 
         return response()->json(['message' => $message, 'is_open' => true]);
@@ -224,9 +228,23 @@ class DoctorAttendanceController extends Controller
             $open = false;
             $message .= '، وأُغلق طابور التخصص (يُكمَل فحص من فيه)';
             Log::info('Specialty closed by last doctor leaving', ['event_specialty_id' => $eventSpecialty->id, 'doctor_id' => $doctor->id, 'by' => Auth::id()]);
+        } elseif ($open) {
+            // Their finished visits stop counting against the capacity
+            $message .= $this->sendWaiting($eventSpecialty);
         }
 
         return response()->json(['message' => $message, 'is_open' => $open]);
+    }
+
+    /** Already open, and it may now have room: the end of the staff message. */
+    private function sendWaiting(EventSpecialty $eventSpecialty): string
+    {
+        $sent = $this->queues->sendWaiting($eventSpecialty->id);
+        if ($sent > 0) {
+            Log::info('Waiting patients sent to open specialty', ['event_specialty_id' => $eventSpecialty->id, 'sent' => $sent, 'by' => Auth::id()]);
+        }
+
+        return $sent > 0 ? "، أُرسل إلى الطابور {$sent} زائر" : '';
     }
 
     /** Every day the doctor was scheduled, newest first, with what happened. */

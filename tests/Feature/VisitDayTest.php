@@ -1346,6 +1346,216 @@ class VisitDayTest extends TestCase
         $this->assertSame('Completed', $this->statusOf($p['ids'][0]));
     }
 
+    // ------------------------------------------ nobody waits for nothing
+
+    /** Open specialty, full at $capacity: doctor A present, doctor B left. Returns [A, B]. */
+    private function limit(int $esId, int $capacity): array
+    {
+        $a = $this->doctorFor($esId, 'A');
+        $b = $this->doctorFor($esId, 'B');
+        $this->arrive($esId, $a);
+        $this->arrive($esId, $b);
+        $this->postJson("/api/event-specialties/{$esId}/doctors/{$b->id}/leave")->assertOk();
+        DB::table('doctor_intervals')->where('day_id', $this->es[$esId]['today'][0])->where('doctor_id', $a->id)->update(['visits_count' => $capacity]);
+
+        return [$a, $b];
+    }
+
+    /** A checked-in patient of this specialty only. */
+    private function arrived(int $esId, string $phone): array
+    {
+        $p = $this->patient([[$esId, 'today']], null, $phone);
+        $this->checkIn($p['patient_id'])->assertOk();
+
+        return $p;
+    }
+
+    public function test_doctor_back_from_a_break_sends_who_waits(): void
+    {
+        [$a] = $this->esIds();
+        $doctor = $this->doctorFor($a);
+        $this->arrive($a, $doctor);
+        $this->postJson("/api/event-specialties/{$a}/doctors/{$doctor->id}/break")->assertOk();
+        // Left stuck while the specialty stayed open, as before this rule existed
+        $p = $this->arrived($a, '0555000001');
+        DB::table('appointments')->where('id', $p['ids'][0])->update(['status' => 'Waiting', 'orderList' => 0]);
+
+        $this->postJson("/api/event-specialties/{$a}/doctors/{$doctor->id}/arrive")->assertOk()
+            ->assertJsonFragment(['is_open' => true]);
+
+        $this->assertSame('Present', $this->statusOf($p['ids'][0]));
+    }
+
+    public function test_doctor_coming_back_to_a_full_specialty_sends_who_waits(): void
+    {
+        [$a] = $this->esIds();
+        [, $b] = $this->limit($a, 1);
+        $first = $this->arrived($a, '0555000001');
+        $second = $this->arrived($a, '0555000002');
+        $this->assertSame('Waiting', $this->statusOf($second['ids'][0]));
+
+        $this->arrive($a, $b);
+
+        $this->assertSame('Present', $this->statusOf($second['ids'][0]));
+        $this->assertSame([$first['patient_id'], $second['patient_id']], $this->queue($a));
+    }
+
+    public function test_a_place_freed_in_a_full_specialty_goes_to_the_first_who_waits(): void
+    {
+        [$a] = $this->esIds();
+        $this->limit($a, 1);
+        $first = $this->arrived($a, '0555000001');
+        $second = $this->arrived($a, '0555000002');
+        $third = $this->arrived($a, '0555000003');
+
+        $this->deleteJson("/api/appointments/{$first['ids'][0]}")->assertOk();
+
+        $this->assertSame('Present', $this->statusOf($second['ids'][0]));
+        $this->assertSame('Waiting', $this->statusOf($third['ids'][0]));
+    }
+
+    public function test_a_doctor_who_left_finishing_a_patient_frees_the_place(): void
+    {
+        [$a] = $this->esIds();
+        [$stays, $left] = $this->limit($a, 1);
+        $this->postJson("/api/event-specialties/{$a}/doctors/{$left->id}/arrive")->assertOk();
+        DB::table('doctor_intervals')->where('doctor_id', $left->id)->update(['visits_count' => 1]);
+        $first = $this->arrived($a, '0555000001');
+        $this->enter([$first['ids'][0]], $left)->assertOk();
+        $this->postJson("/api/event-specialties/{$a}/doctors/{$left->id}/leave")->assertOk();
+        $second = $this->arrived($a, '0555000002');
+        $this->assertSame('Waiting', $this->statusOf($second['ids'][0]));
+
+        $this->postJson("/api/waitinglist/Complete/{$first['ids'][0]}")->assertOk();
+
+        $this->assertSame('Present', $this->statusOf($second['ids'][0]));
+    }
+
+    public function test_undoing_a_check_in_frees_the_place(): void
+    {
+        [$a] = $this->esIds();
+        $this->limit($a, 1);
+        $first = $this->arrived($a, '0555000001');
+        $second = $this->arrived($a, '0555000002');
+
+        $this->undoCheckIn($first['patient_id'])->assertOk();
+
+        $this->assertSame('Present', $this->statusOf($second['ids'][0]));
+    }
+
+    public function test_deleting_a_finished_exam_frees_the_place(): void
+    {
+        [$a] = $this->esIds();
+        [$doctor] = $this->limit($a, 1);
+        $first = $this->arrived($a, '0555000001');
+        $second = $this->arrived($a, '0555000002');
+        $this->enter([$first['ids'][0]], $doctor)->assertOk();
+        $this->postJson("/api/waitinglist/Complete/{$first['ids'][0]}")->assertOk();
+        $this->assertSame('Waiting', $this->statusOf($second['ids'][0]));
+
+        $this->deleteJson("/api/appointments/{$first['ids'][0]}")->assertOk();
+
+        $this->assertSame('Present', $this->statusOf($second['ids'][0]));
+    }
+
+    public function test_transfer_out_of_a_full_specialty_frees_the_place_and_closes_the_gap(): void
+    {
+        [$a, $b] = $this->esIds();
+        $this->limit($a, 2);
+        $first = $this->arrived($a, '0555000001');
+        $second = $this->arrived($a, '0555000002');
+        $third = $this->arrived($a, '0555000003');
+
+        $this->postJson("/api/appointments/{$first['ids'][0]}/transfer-specialty", ['new_event_specialty_id' => $b, 'use_closest_slot' => true])->assertOk();
+
+        $this->assertSame('Present', $this->statusOf($third['ids'][0]));
+        $this->assertSame([1, 2], DB::table('appointments')->whereIn('id', [$second['ids'][0], $third['ids'][0]])->orderBy('orderList')->pluck('orderList')->all());
+    }
+
+    public function test_transfer_to_a_specialty_held_under_another_number_is_refused_cleanly(): void
+    {
+        [$a, $b] = $this->esIds();
+        $p = $this->patient([[$a, 'today']], 'Same Person');
+        $this->patient([[$b, 'today']], 'Same Person');
+
+        $this->postJson("/api/appointments/{$p['ids'][0]}/transfer-specialty", ['new_event_specialty_id' => $b, 'use_closest_slot' => true])->assertStatus(409);
+        $this->assertSame((int) $a, (int) Appointment::find($p['ids'][0])->event_specialty_id);
+    }
+
+    public function test_transfer_to_another_day_lets_the_other_specialty_go_on(): void
+    {
+        [$a, $b, $c] = $this->esIds();
+        $p = $this->patient([[$a, 'today'], [$b, 'today']]);
+        $this->checkIn($p['patient_id'])->assertOk();
+        $queued = Appointment::whereIn('id', $p['ids'])->where('status', 'Present')->firstOrFail();
+        $other = Appointment::whereIn('id', $p['ids'])->where('status', 'Waiting')->firstOrFail();
+        [$dayId, $hourId] = $this->es[$c]['tomorrow'];
+
+        $this->postJson("/api/appointments/{$queued->id}/transfer-specialty", [
+            'new_event_specialty_id' => $c, 'use_closest_slot' => false, 'day_id' => $dayId, 'hour_id' => $hourId,
+        ])->assertOk();
+
+        $this->assertSame('Pending', $this->statusOf($queued->id));
+        $this->assertSame('Present', $this->statusOf($other->id));
+    }
+
+    public function test_more_visits_planned_today_send_who_waits(): void
+    {
+        [$a] = $this->esIds();
+        [$doctor] = $this->limit($a, 1);
+        $this->arrived($a, '0555000001');
+        $second = $this->arrived($a, '0555000002');
+
+        DB::table('doctor_intervals')->where('doctor_id', $doctor->id)->update(['visits_count' => 5]);
+        DB::transaction(fn () => app(QueueService::class)->afterScheduleChange($this->eventId));
+
+        $this->assertSame('Present', $this->statusOf($second['ids'][0]));
+    }
+
+    public function test_a_specialty_opening_during_a_check_in_does_not_miss_the_patient(): void
+    {
+        [$a] = $this->esIds();
+        $this->close($a);
+        $p = $this->patient([[$a, 'today']]);
+
+        // The check-in saw it closed; the opening commits before the check-in does
+        DB::transaction(function () use ($a, $p) {
+            app(QueueService::class)->checkIn($this->eventId, $p['patient_id']);
+            DB::table('event_specialties')->where('id', $a)->update(['opened_on' => QueueService::today()]);
+        });
+
+        $this->assertSame('Present', $this->statusOf($p['ids'][0]));
+    }
+
+    public function test_a_specialty_opening_during_a_pass_does_not_miss_the_patient(): void
+    {
+        [$a, $b] = $this->esIds();
+        $this->close($b);
+        $p = $this->patient([[$a, 'today'], [$b, 'today']]);
+        $this->checkIn($p['patient_id'])->assertOk();
+        $doctor = $this->doctorFor($a);
+        $this->arrive($a, $doctor);
+        $this->enter([$p['ids'][0]], $doctor)->assertOk();
+
+        DB::transaction(function () use ($b, $p) {
+            app(QueueService::class)->complete(Appointment::find($p['ids'][0]));
+            DB::table('event_specialties')->where('id', $b)->update(['opened_on' => QueueService::today()]);
+        });
+
+        $this->assertSame('Present', $this->statusOf($p['ids'][1]));
+    }
+
+    public function test_who_waits_with_a_queue_elsewhere_is_not_sent_twice(): void
+    {
+        [$a, $b] = $this->esIds();
+        $p = $this->patient([[$a, 'today'], [$b, 'today']]);
+        $this->checkIn($p['patient_id'])->assertOk();
+        $waiting = Appointment::whereIn('id', $p['ids'])->where('status', 'Waiting')->firstOrFail();
+
+        $this->assertSame(0, app(QueueService::class)->sendWaiting($waiting->event_specialty_id));
+        $this->assertSame('Waiting', $this->statusOf($waiting->id));
+    }
+
     public function test_doctor_on_a_break_sees_nobody_and_invites_nobody(): void
     {
         [$a] = $this->esIds();

@@ -44,6 +44,10 @@ class QueueService
     public const DILATATION_STATUSES = ['DilatationSent', 'Dilatation'];
     // Entered (دخل): with a doctor; out of the queue but still this specialty's patient
     public const ACTIVE_STATUSES = ['Present', 'Commingsoon', 'DilatationSent', 'Dilatation', 'Entered'];
+    // What can count against a specialty's capacity
+    public const LOAD_STATUSES = [...self::ACTIVE_STATUSES, 'Completed'];
+    // Attempts of a transaction that lost a deadlock
+    private const RETRIES = 3;
     public const PUSH_DOWN_PLACES = 5;
     public const TRANSFER_POSITION = 3;
     // «قدّمه» by the super/special admin: this place in the queue, ahead of everyone after it
@@ -146,6 +150,8 @@ class QueueService
             }
 
             if (!$first) {
+                $this->promoteAfterCommit($eventId, $patientId);
+
                 return null;
             }
 
@@ -760,6 +766,8 @@ class QueueService
                 if ($this->isToday($appointment)) {
                     $this->promoteNext($appointment->event_id, $appointment->patient_id);
                 }
+            } elseif ($appointment->status === 'Completed') {
+                $this->sendWaitingAfterCommit($appointment->event_specialty_id);
             }
         });
     }
@@ -913,15 +921,25 @@ class QueueService
      * Queue handling after reception transferred an appointment to another
      * specialty. Only today's appointments take part in the queue.
      */
-    public function afterTransfer(Appointment $appointment, string $previousStatus): void
+    public function afterTransfer(Appointment $appointment, string $previousStatus, int $previousEventSpecialtyId): void
     {
-        DB::transaction(function () use ($appointment, $previousStatus) {
+        DB::transaction(function () use ($appointment, $previousStatus, $previousEventSpecialtyId) {
             $appointment->is_priority = false;
+
+            // It left the old queue: the gap closes and the room goes to who waits there
+            if (in_array($previousStatus, self::QUEUE_STATUSES, true)) {
+                $this->renumberQueue($previousEventSpecialtyId);
+            }
+            if (in_array($previousStatus, self::LOAD_STATUSES, true)) {
+                $this->sendWaitingAfterCommit($previousEventSpecialtyId);
+            }
 
             if (!$this->isToday($appointment)) {
                 $appointment->status = 'Pending';
                 $appointment->orderList = 0;
                 $appointment->save();
+                // Moved to another day: the specialties on hold today go on without it
+                $this->promoteNext($appointment->event_id, $appointment->patient_id);
                 return;
             }
 
@@ -967,10 +985,88 @@ class QueueService
      */
     public function openSpecialty(EventSpecialty $eventSpecialty): array
     {
-        return DB::transaction(function () use ($eventSpecialty) {
+        // Committed before sending: a check-in or «إجتاز» from now on sees it open
+        DB::transaction(function () use ($eventSpecialty) {
             $this->lockQueue($eventSpecialty->id);
             $eventSpecialty->opened_on = self::today();
             $eventSpecialty->save();
+        });
+
+        $sent = $this->sendWaiting($eventSpecialty->id);
+
+        return ['sent' => $sent, 'moved' => $this->moveFromLongerQueues($eventSpecialty)];
+    }
+
+    /**
+     * Sends the patients waiting for this specialty with no queue elsewhere, in
+     * arrival order, while it is open and not full. Runs whenever a specialty may
+     * take someone it could not take before: nothing else looks at this list.
+     *
+     * @return int patients sent
+     */
+    public function sendWaiting(int $eventSpecialtyId): int
+    {
+        if (!$this->isOpen($eventSpecialtyId)) {
+            return 0;
+        }
+
+        // Runs on every «إجتاز»: patients on hold behind another queue are left out here
+        $elsewhere = self::scopeToday(Appointment::query())
+            ->where('event_id', EventSpecialty::whereKey($eventSpecialtyId)->value('event_id'))
+            ->whereIn('status', self::ACTIVE_STATUSES)
+            ->select('patient_id');
+        $waiting = self::scopeToday(Appointment::query())
+            ->where('event_specialty_id', $eventSpecialtyId)
+            ->where('status', 'Waiting')
+            ->whereNotIn('patient_id', $elsewhere)
+            ->orderBy('checked_in_at')
+            ->orderBy('id')
+            ->get(['id', 'event_id', 'patient_id']);
+
+        $sent = 0;
+        foreach ($waiting as $row) {
+            // One short transaction each: the desks keep working during a long list
+            $result = DB::transaction(function () use ($row, $eventSpecialtyId) {
+                $this->lockQueue($eventSpecialtyId);
+                if (!$this->accepts($eventSpecialtyId)) {
+                    return null;
+                }
+                $todays = $this->todaysAppointments($row->event_id, $row->patient_id);
+                $appointment = $todays->firstWhere('id', $row->id);
+                if ($appointment?->status !== 'Waiting'
+                    || $todays->contains(fn ($a) => in_array($a->status, self::ACTIVE_STATUSES, true))) {
+                    return false;
+                }
+
+                $appointment->status = 'Present';
+                $this->placeInQueue($appointment, null, (bool) $appointment->is_special);
+
+                return true;
+            }, self::RETRIES);
+
+            if ($result === null) {
+                break;
+            }
+            $sent += (int) $result;
+        }
+
+        return $sent;
+    }
+
+    /** The event's schedule was edited: today's open specialties may have room now. */
+    public function afterScheduleChange(int $eventId): void
+    {
+        EventSpecialty::where('event_id', $eventId)
+            ->whereDate('opened_on', self::today())
+            ->pluck('id')
+            ->each(fn ($id) => $this->sendWaitingAfterCommit($id));
+    }
+
+    /** Patients at the back of longer queues move to a specialty that just opened. */
+    private function moveFromLongerQueues(EventSpecialty $eventSpecialty): int
+    {
+        return DB::transaction(function () use ($eventSpecialty) {
+            $this->lockQueue($eventSpecialty->id);
 
             $waiting = self::scopeToday(Appointment::query())
                 ->where('event_specialty_id', $eventSpecialty->id)
@@ -979,23 +1075,15 @@ class QueueService
                 ->orderBy('id')
                 ->get();
 
-            $sent = 0;
             $candidates = collect(); // [waiting appointment here, active appointment elsewhere]
             foreach ($waiting as $appointment) {
-                if ($this->capacity($eventSpecialty->id)['full']) {
-                    break;
-                }
                 $active = self::scopeToday(Appointment::query())
                     ->where('event_id', $appointment->event_id)
                     ->where('patient_id', $appointment->patient_id)
                     ->whereIn('status', self::ACTIVE_STATUSES)
                     ->first();
 
-                if (!$active) {
-                    $appointment->status = 'Present';
-                    $this->placeInQueue($appointment, null, (bool) $appointment->is_special);
-                    $sent++;
-                } elseif (in_array($active->status, self::QUEUE_STATUSES, true) && !$active->is_priority) {
+                if ($active && in_array($active->status, self::QUEUE_STATUSES, true) && !$active->is_priority) {
                     $candidates->push([$appointment, $active]);
                 }
             }
@@ -1031,7 +1119,7 @@ class QueueService
                 $appointment->save();
             }
 
-            return ['sent' => $sent, 'moved' => $moved->count()];
+            return $moved->count();
         });
     }
 
@@ -1124,7 +1212,7 @@ class QueueService
     }
 
     /** Next appointment on hold today becomes active and joins the least busy open queue. */
-    private function promoteNext(int $eventId, int $patientId): ?Appointment
+    private function promoteNext(int $eventId, int $patientId, bool $retry = true): ?Appointment
     {
         $todays = $this->todaysAppointments($eventId, $patientId);
 
@@ -1134,6 +1222,10 @@ class QueueService
 
         $next = $this->pickLeastBusy($todays->where('status', 'Waiting'), $this->openSpecialtyIds($eventId));
         if (!$next) {
+            if ($retry && $todays->contains('status', 'Waiting')) {
+                $this->promoteAfterCommit($eventId, $patientId);
+            }
+
             return null;
         }
 
@@ -1190,21 +1282,58 @@ class QueueService
 
     private function leaveQueue(Appointment $appointment, string $status): void
     {
-        $wasQueued = in_array($appointment->getOriginal('status'), self::QUEUE_STATUSES, true);
+        $previous = $appointment->getOriginal('status');
 
         $appointment->status = $status;
         $appointment->orderList = 0;
         $appointment->is_priority = false;
         $appointment->save();
 
-        // Close the gap so the remaining patients keep places 1, 2, 3 ...
-        if ($wasQueued) {
-            $this->lockQueue($appointment->event_specialty_id);
-            foreach ($this->queue($appointment->event_specialty_id)->values() as $i => $a) {
-                $a->orderList = $i + 1;
-                $a->save();
-            }
+        if (in_array($previous, self::QUEUE_STATUSES, true)) {
+            $this->renumberQueue($appointment->event_specialty_id);
         }
+        // One patient less in a full specialty: someone waiting may take the place.
+        // Completed too: the visits of a doctor who left don't count against capacity
+        if (in_array($previous, self::LOAD_STATUSES, true) && ($status === 'Completed' || !in_array($status, self::LOAD_STATUSES, true))) {
+            $this->sendWaitingAfterCommit($appointment->event_specialty_id);
+        }
+    }
+
+    /** Closes the gap so the remaining patients keep places 1, 2, 3 ... */
+    private function renumberQueue(int $eventSpecialtyId): void
+    {
+        $this->lockQueue($eventSpecialtyId);
+        foreach ($this->queue($eventSpecialtyId)->values() as $i => $a) {
+            $a->orderList = $i + 1;
+            $a->save();
+        }
+    }
+
+    private function sendWaitingAfterCommit(int $eventSpecialtyId): void
+    {
+        $this->afterCommit(fn () => $this->sendWaiting($eventSpecialtyId));
+    }
+
+    /**
+     * A specialty may be opening right now, not visible to this transaction,
+     * and its sending may have run before this patient started waiting: neither
+     * side would send them. Looking again once committed closes that gap.
+     */
+    private function promoteAfterCommit(int $eventId, int $patientId): void
+    {
+        $this->afterCommit(fn () => DB::transaction(fn () => $this->promoteNext($eventId, $patientId, false), self::RETRIES));
+    }
+
+    /** The staff action is already saved: a failure here is logged, not shown as its failure. */
+    private function afterCommit(callable $work): void
+    {
+        DB::afterCommit(function () use ($work) {
+            try {
+                $work();
+            } catch (\Throwable $e) {
+                report($e);
+            }
+        });
     }
 
     private function clearVisit(Appointment $appointment): void
