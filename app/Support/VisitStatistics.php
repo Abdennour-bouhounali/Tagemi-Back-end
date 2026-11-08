@@ -45,6 +45,35 @@ class VisitStatistics
     }
 
     /**
+     * Only the appointments that actually happened: every status but Pending
+     * (whatever the patient reached, Present, Waiting, Completed ...). A
+     * patient counts when at least one of their appointments is left.
+     */
+    public static function presentOnly(Collection $appointments): Collection
+    {
+        return $appointments->where('status', '!=', 'Pending')->values();
+    }
+
+    /**
+     * «تم إنزاله» (Commingsoon) inside $rows: appointments, their patients, and
+     * those of them with another non-Pending appointment anywhere in $all.
+     */
+    public static function comingSoon(Collection $rows, Collection $all): array
+    {
+        $called = $rows->where('status', 'Commingsoon');
+        $patients = $called->pluck('patient_id')->unique();
+        $withOther = $patients->filter(fn ($patientId) => $all->contains(fn ($a) => $a->patient_id === $patientId
+            && $a->status !== 'Pending'
+            && !$called->contains('id', $a->id)));
+
+        return [
+            'coming_soon' => $called->count(),
+            'patients_coming_soon' => $patients->count(),
+            'patients_coming_soon_with_other' => $withOther->count(),
+        ];
+    }
+
+    /**
      * Appointment counts per group, plus patient counts (a patient with
      * three specialties is one patient and three appointments).
      *

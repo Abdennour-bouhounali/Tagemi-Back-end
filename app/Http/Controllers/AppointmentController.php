@@ -195,7 +195,7 @@ public function liveVersion($eventId)
         $event = Event::findOrFail($eventId);
         $appointments = Appointment::with('eventSpecialty.specialty')->where('event_id', $eventId)->get();
 
-        $bySpecialty = $appointments->groupBy('event_specialty_id')
+        $bySpecialty = fn ($rows) => $rows->groupBy('event_specialty_id')
             ->map(function ($items) {
                 $specialty = $items->first()->eventSpecialty?->specialty;
                 return [
@@ -205,6 +205,9 @@ public function liveVersion($eventId)
             })
             ->values();
 
+        // The «بعد الحدث» outcome counts only the patients who came
+        $present = VisitStatistics::presentOnly($appointments);
+
         return response()->json([
             'event' => [
                 'id' => $event->id,
@@ -212,7 +215,14 @@ public function liveVersion($eventId)
                 'is_archived' => $event->is_archived,
             ],
             'statistics' => VisitStatistics::summarize($appointments),
-            'by_specialty' => $bySpecialty,
+            'by_specialty' => $bySpecialty($appointments),
+            'present' => [
+                'statistics' => VisitStatistics::summarize($present) + VisitStatistics::comingSoon($present, $present),
+                'by_specialty' => $bySpecialty($present)->map(fn ($row) => $row + VisitStatistics::comingSoon(
+                    $present->filter(fn ($a) => ($a->eventSpecialty?->specialty?->id ?? null) === $row['specialty_id']),
+                    $present,
+                ))->values(),
+            ],
         ], 200);
     }
 

@@ -75,7 +75,7 @@ class DeepStatistics
     /**
      * @param Collection $appointments items: patient_id, city, sex, birthday, status, specialty_name
      */
-    public static function build(Collection $appointments): array
+    public static function build(Collection $appointments, bool $presentOnly = false): array
     {
         $rows = $appointments->map(fn ($a) => [
             'patient' => $a->patient_id ?: 'a'.$a->id,
@@ -109,24 +109,26 @@ class DeepStatistics
             'ksar_summary' => self::ksarSummary($patients, $rows, $ksarOrder),
             'pyramid' => self::pyramid($patients),
             'timeline' => self::timeline($rows),
-            'insights' => self::insights($patients, $rows, $ksarOrder),
-            'matrices' => self::matrices($rows),
+            'insights' => self::insights($patients, $rows, $ksarOrder, $presentOnly),
+            'matrices' => self::matrices($rows, $presentOnly),
             // Same matrices restricted to one appointment status group; a patient
             // counts in a group when one of their appointments is in it.
             'matrices_by_status' => collect(array_keys(VisitStatistics::GROUPS))
-                ->mapWithKeys(fn ($group) => [$group => self::matrices($rows->where('status', $group)->values())])
+                ->reject(fn ($group) => $presentOnly && $group === 'pending')
+                ->mapWithKeys(fn ($group) => [$group => self::matrices($rows->where('status', $group)->values(), $presentOnly)])
                 ->all(),
         ];
     }
 
-    private static function matrices(Collection $rows): array
+    private static function matrices(Collection $rows, bool $presentOnly = false): array
     {
         $patients = $rows->unique('patient')->values();
 
         $ksarOrder = $patients->countBy('ksar')->sortDesc()->keys()->all();
         $specialtyOrder = $rows->countBy('specialty')->sortDesc()->keys()->all();
         $sexOrder = ['ذكر', 'أنثى'];
-        $outcomeOrder = ['أنهى الفحص', 'حضر ولم يُفحص', 'لم يحضر'];
+        // Without Pending appointments nobody is «لم يحضر»
+        $outcomeOrder = $presentOnly ? ['أنهى الفحص', 'حضر ولم يُفحص'] : ['أنهى الفحص', 'حضر ولم يُفحص', 'لم يحضر'];
         $ageOrder = self::AGE_GROUPS;
         if ($patients->contains('age_group', self::UNKNOWN)) {
             $ageOrder[] = self::UNKNOWN;
@@ -271,7 +273,7 @@ class DeepStatistics
     }
 
     /** Plain-Arabic findings, so the numbers can be read at a glance. */
-    private static function insights(Collection $patients, Collection $rows, array $ksarOrder): array
+    private static function insights(Collection $patients, Collection $rows, array $ksarOrder, bool $presentOnly = false): array
     {
         $out = [];
         $n = $patients->count();
@@ -307,7 +309,7 @@ class DeepStatistics
         }
 
         $byAbsence = collect($ksarOrder)->filter(fn ($k) => $rows->where('ksar', $k)->count() >= 15);
-        if ($byAbsence->count() >= 2 && $rows->where('attended', true)->count() > 0) {
+        if (!$presentOnly && $byAbsence->count() >= 2 && $rows->where('attended', true)->count() > 0) {
             $rate = fn ($k) => $pc($rows->where('ksar', $k)->where('attended', true)->count(), $rows->where('ksar', $k)->count());
             $best = $byAbsence->sortByDesc($rate)->first();
             $worst = $byAbsence->sortBy($rate)->first();

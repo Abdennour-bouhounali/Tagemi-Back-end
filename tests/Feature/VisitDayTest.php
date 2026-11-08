@@ -1071,6 +1071,24 @@ class VisitDayTest extends TestCase
         $this->assertSame(['pending' => 1, 'waiting' => 1, 'in_queue' => 1, 'dilatation' => 0, 'in_visit' => 0, 'completed' => 0, 'total' => 3,
             'patients_total' => 2, 'patients_arrived' => 1, 'patients_finished' => 0], $stats);
         $this->assertSame($stats['total'], $this->getJson("/api/{$this->eventId}/statistics")->json('total_appointments'));
+
+        // «بعد الحدث»: only the appointments that happened (no Pending)
+        $present = $this->getJson("/api/appointments/event-statistics/{$this->eventId}")->json('present.statistics');
+        $this->assertSame(['pending' => 0, 'waiting' => 1, 'in_queue' => 1, 'dilatation' => 0, 'in_visit' => 0, 'completed' => 0, 'total' => 2,
+            'patients_total' => 1, 'patients_arrived' => 1, 'patients_finished' => 0,
+            'coming_soon' => 0, 'patients_coming_soon' => 0, 'patients_coming_soon_with_other' => 0], $present);
+
+        $deep = $this->getJson("/api/events/{$this->eventId}/deep-stats?present=1")->assertOk()->json('statistics');
+        $this->assertSame(['appointments' => 2, 'patients' => 1, 'ksars' => 1], $deep['totals']);
+        $this->assertArrayNotHasKey('pending', $deep['matrices_by_status']);
+        $this->assertNotContains('لم يحضر', $deep['matrices']['sex_outcome']['cols']);
+        $this->assertSame(3, $this->getJson("/api/events/{$this->eventId}/deep-stats")->json('statistics.totals.appointments'));
+
+        // «تم إنزاله» with another appointment that happened (the Waiting one)
+        Appointment::whereKey($p['ids'])->where('status', 'Present')->update(['status' => 'Commingsoon']);
+        $present = $this->getJson("/api/appointments/event-statistics/{$this->eventId}")->json('present');
+        $this->assertSame([1, 1, 1], [$present['statistics']['coming_soon'], $present['statistics']['patients_coming_soon'], $present['statistics']['patients_coming_soon_with_other']]);
+        $this->assertSame(1, collect($present['by_specialty'])->sum('coming_soon'));
     }
 
     // ------------------------------------------- دخل (with the doctor), timing

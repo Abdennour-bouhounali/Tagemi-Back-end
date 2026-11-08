@@ -176,7 +176,7 @@ public function statusStats($eventId)
      * Deep statistics: cross-tabulation matrices (ksar x sex, ...) for any
      * event, archived or still running.
      */
-    public function deepStats($eventId)
+    public function deepStats(Request $request, $eventId)
     {
         $event = Event::findOrFail($eventId);
 
@@ -187,6 +187,11 @@ public function statusStats($eventId)
         $live = Appointment::where('event_id', $eventId)->get($columns);
         $archived = AppointmentArchive::where('event_id', $eventId)->get($columns);
         $appointments = $live->concat($archived);
+        // ?present=1: only the patients who came (the «بعد الحدث» tab)
+        $presentOnly = $request->boolean('present');
+        if ($presentOnly) {
+            $appointments = VisitStatistics::presentOnly($appointments);
+        }
 
         $specialtyNames = DB::table('event_specialties')
             ->join('specialties', 'event_specialties.specialty_id', '=', 'specialties.id')
@@ -199,7 +204,8 @@ public function statusStats($eventId)
         return response()->json([
             'success' => true,
             'event' => $event,
-            'statistics' => DeepStatistics::build($appointments),
+            'present_only' => $presentOnly,
+            'statistics' => DeepStatistics::build($appointments, $presentOnly),
         ]);
     }
 
