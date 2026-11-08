@@ -26,6 +26,7 @@ use App\Http\Controllers\Content\FutureProjectController;
 use App\Http\Controllers\Content\StaticContentController;
 use App\Http\Controllers\ContactController;
 use App\Http\Controllers\VolunteerController;
+use App\Http\Controllers\VolunteerEvaluationController;
 use App\Http\Controllers\UserController;
 use App\Http\Controllers\EventReportController;
 use App\Http\Controllers\EvaluationController;
@@ -76,6 +77,16 @@ Route::get('/specialty', [SpecialtyController::class, 'index']);
 Route::prefix('evaluations')->group(function () {
     Route::get('/form-data/{eventId}', [EvaluationController::class, 'getFormData']);
     Route::post('/', [EvaluationController::class, 'store'])->middleware('throttle:public-forms');
+});
+
+// Volunteer debrief («تقييم المتطوعين»): opened from the event's QR code, no
+// account. A token kept on the phone (X-Eval-Token header) identifies the answers.
+Route::prefix('public/volunteer-eval/{eventId}')->whereNumber('eventId')->middleware('throttle:volunteer-eval')->group(function () {
+    Route::get('/', [VolunteerEvaluationController::class, 'publicShow']);
+    Route::post('/join', [VolunteerEvaluationController::class, 'join'])->middleware('throttle:volunteer-eval-join');
+    Route::get('/me', [VolunteerEvaluationController::class, 'me']);
+    Route::put('/me/role', [VolunteerEvaluationController::class, 'updateRole']);
+    Route::put('/me/axes/{axisId}', [VolunteerEvaluationController::class, 'saveAxis']);
 });
 
 // Public contact / volunteer forms
@@ -422,6 +433,17 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/test-appointments/reset-status', [AppointmentController::class, 'resetTestAppointmentsStatus']);
         Route::get('/test-appointments/count', [AppointmentController::class, 'countTestAppointments']);
         Route::delete('/test-appointments/delete-all', [AppointmentController::class, 'deleteAllTestAppointments']);
+
+        // Volunteer debrief of an event: questions, session, results
+        Route::prefix('volunteer-eval/{eventId}')->whereNumber('eventId')->group(function () {
+            Route::get('/', [VolunteerEvaluationController::class, 'show']);
+            Route::delete('/', [VolunteerEvaluationController::class, 'destroy']);
+            Route::put('/config', [VolunteerEvaluationController::class, 'updateConfig']);
+            Route::put('/session', [VolunteerEvaluationController::class, 'updateSession']);
+            Route::put('/recommendations/{axisId}', [VolunteerEvaluationController::class, 'updateRecommendation']);
+            Route::get('/results', [VolunteerEvaluationController::class, 'results']);
+            Route::delete('/participants/{participantId}', [VolunteerEvaluationController::class, 'destroyParticipant'])->whereNumber('participantId');
+        });
 
         // Evaluations
         Route::get('/evaluations', [EvaluationController::class, 'index']);

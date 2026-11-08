@@ -64,6 +64,12 @@ class Event extends Model
             return $this->hasOne(EventReport::class);
         }
 
+    /** Volunteer debrief («تقييم المتطوعين»): at most one per event. */
+    public function volunteerEvaluation()
+    {
+        return $this->hasOne(VolunteerEvaluation::class);
+    }
+
     public function eventSpecialties(): HasMany
     {
         return $this->hasMany(EventSpecialty::class);

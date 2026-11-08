@@ -46,6 +46,14 @@ class AppServiceProvider extends ServiceProvider
             return Limit::perMinute(120)->by($request->ip());
         });
 
+        // Volunteer debrief: a whole team answers at once on the venue Wi-Fi
+        RateLimiter::for('volunteer-eval', function (Request $request) {
+            return Limit::perMinute(600)->by($request->ip());
+        });
+        RateLimiter::for('volunteer-eval-join', function (Request $request) {
+            return Limit::perMinute(60)->by($request->ip());
+        });
+
         // «دوري» page: each open page polls every 30 s. Limited per person
         // (number or phone) so a whole hall on one IP keeps working.
         RateLimiter::for('my-turn', function (Request $request) {
