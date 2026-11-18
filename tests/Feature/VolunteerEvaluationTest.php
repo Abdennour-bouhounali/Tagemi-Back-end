@@ -195,4 +195,62 @@ class VolunteerEvaluationTest extends TestCase
             'title' => 'تقييم', 'roles' => $evaluation['roles'], 'axes' => $axes,
         ])->assertUnprocessable();
     }
+
+    public function test_question_types_like_a_form(): void
+    {
+        $evaluation = $this->createEvaluation();
+        $axes = $evaluation['axes'];
+        $axes[0]['qs'] = [
+            ['id' => 'qr', 't' => 'تقييم'], // no type = rating
+            ['id' => 'qt', 't' => 'رأيك؟', 'type' => 'text'],
+            ['id' => 'qy', 't' => 'هل؟', 'type' => 'yesno', 'options' => [['id' => 'x', 'label' => 'dropped']]],
+            ['id' => 'qs', 't' => 'اختر واحداً', 'type' => 'single', 'options' => [['id' => 'o1', 'label' => ' أ '], ['id' => 'o2', 'label' => 'ب']]],
+            ['id' => 'qm', 't' => 'اختر', 'type' => 'multi', 'options' => [['id' => 'm1', 'label' => 'أ'], ['id' => 'm2', 'label' => 'ب'], ['id' => 'm3', 'label' => 'ج']]],
+        ];
+        $put = fn ($axes) => $this->putJson("/api/volunteer-eval/{$this->eventId}/config", [
+            'title' => 'تقييم', 'roles' => $evaluation['roles'], 'axes' => $axes,
+        ]);
+
+        $saved = $put($axes)->assertOk()->json('evaluation.axes.0.qs');
+        $this->assertSame('rating', $saved[0]['type']);
+        $this->assertArrayNotHasKey('options', $saved[2]); // yes / no has fixed answers
+        $this->assertSame('أ', $saved[3]['options'][0]['label']);
+
+        // A choice question needs two options; an unknown type is refused
+        $bad = $axes;
+        $bad[0]['qs'][3]['options'] = [['id' => 'o1', 'label' => 'أ']];
+        $put($bad)->assertUnprocessable();
+        $bad = $axes;
+        $bad[0]['qs'][1]['type'] = 'slider';
+        $put($bad)->assertUnprocessable();
+
+        $axisId = $axes[0]['id'];
+        $answer = function (array $body) use ($axisId) {
+            $this->app['auth']->forgetGuards();
+            $token = $this->postJson("/api/public/volunteer-eval/{$this->eventId}/join", ['role_id' => 'r_rec'])->json('token');
+            return $this->asVolunteer($token)->putJson("/api/public/volunteer-eval/{$this->eventId}/me/axes/{$axisId}", ['status' => 'done'] + $body)
+                ->assertOk()->json("participant.answers.{$axisId}");
+        };
+
+        $first = $answer([
+            'ratings' => ['qr' => 4, 'qt' => 5],
+            'responses' => ['qt' => ' جيد ', 'qy' => 'yes', 'qs' => 'o2', 'qm' => ['m1', 'm3', 'ghost'], 'qr' => 'oops', 'other' => 'x'],
+        ]);
+        $this->assertSame(['qr' => 4], $first['ratings']);
+        $this->assertEquals(['qt' => 'جيد', 'qy' => 'yes', 'qs' => 'o2', 'qm' => ['m1', 'm3']], $first['responses']);
+
+        $answer(['responses' => ['qy' => 'no', 'qs' => 'nope', 'qm' => ['m3'], 'qt' => '  ']]);
+        $answer(['responses' => ['qy' => 'yes', 'qs' => 'o2']]);
+
+        $this->actingAsRole(User::ROLE_SUPER_ADMIN);
+        $qs = collect($this->getJson("/api/volunteer-eval/{$this->eventId}/results")->assertOk()->json('axes.0.questions'))->keyBy('id');
+
+        $this->assertEquals(4, $qs['qr']['average']);
+        $this->assertSame(['جيد'], $qs['qt']['texts']);
+        $this->assertSame([3, 2, 1], [$qs['qy']['count'], $qs['qy']['yes'], $qs['qy']['no']]);
+        $this->assertSame(2, $qs['qs']['count']);
+        $this->assertSame([0, 2], array_column($qs['qs']['options'], 'count'));
+        $this->assertSame([1, 0, 2], array_column($qs['qm']['options'], 'count'));
+        $this->assertSame(2, $qs['qm']['count']);
+    }
 }

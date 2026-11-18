@@ -10,12 +10,13 @@ class VolunteerEvaluationAnswer extends Model
 {
     protected $fillable = [
         'volunteer_evaluation_id', 'participant_id', 'axis_id', 'status',
-        'overall', 'ratings', 'positives', 'negatives',
+        'overall', 'ratings', 'responses', 'positives', 'negatives',
     ];
 
     protected $casts = [
         'overall' => 'integer',
         'ratings' => 'array',
+        'responses' => 'array',
         'positives' => 'array',
         'negatives' => 'array',
     ];
@@ -31,6 +32,7 @@ class VolunteerEvaluationAnswer extends Model
             'status' => $this->status,
             'overall' => $this->overall,
             'ratings' => (object) ($this->ratings ?? []),
+            'responses' => (object) ($this->responses ?? []),
             'positives' => $this->positives ?? [],
             'negatives' => $this->negatives ?? [],
             'saved_at' => $this->updated_at?->toIso8601String(),

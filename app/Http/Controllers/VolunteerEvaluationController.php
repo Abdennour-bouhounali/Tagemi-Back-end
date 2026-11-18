@@ -29,6 +29,10 @@ class VolunteerEvaluationController extends Controller
     private const ID_RULE = 'regex:/^[A-Za-z0-9_-]{1,40}$/';
     private const MAX_NOTES = 20;
 
+    /** Question types, like a form. A question without a type is a rating. */
+    public const TYPES = ['rating', 'text', 'yesno', 'single', 'multi'];
+    private const CHOICE_TYPES = ['single', 'multi'];
+
     // ------------------------------------------------------------ public
 
     /** Questions and roles for the volunteer's phone. */
@@ -92,6 +96,7 @@ class VolunteerEvaluationController extends Controller
             'overall' => 'nullable|integer|between:0,5',
             'ratings' => 'nullable|array',
             'ratings.*' => 'nullable|integer|between:0,5',
+            'responses' => 'nullable|array',
             'positives' => 'nullable|array|max:' . self::MAX_NOTES,
             'negatives' => 'nullable|array|max:' . self::MAX_NOTES,
             'positives.*.text' => 'nullable|string|max:1000',
@@ -102,12 +107,14 @@ class VolunteerEvaluationController extends Controller
             'negatives.*.recommendation' => 'nullable|string|max:1000',
         ]);
 
-        // Only this axis' questions; unanswered ones are left out
-        $questionIds = array_column($axis['qs'] ?? [], 'id');
+        // Only this axis' rating questions; unanswered ones are left out
+        $questions = collect($axis['qs'] ?? []);
+        $ratingIds = $questions->filter(fn ($q) => self::typeOf($q) === 'rating')->pluck('id')->all();
         $ratings = array_filter(
-            array_intersect_key($data['ratings'] ?? [], array_flip($questionIds)),
+            array_intersect_key($data['ratings'] ?? [], array_flip($ratingIds)),
             fn ($value) => $value !== null
         );
+        $responses = $this->cleanResponses($questions, $data['responses'] ?? []);
 
         $participant->answers()->updateOrCreate(
             ['axis_id' => $axisId],
@@ -116,6 +123,7 @@ class VolunteerEvaluationController extends Controller
                 'status' => $data['status'],
                 'overall' => $data['overall'] ?? null,
                 'ratings' => array_map('intval', $ratings),
+                'responses' => $responses,
                 'positives' => $this->cleanNotes($data['positives'] ?? []),
                 'negatives' => $this->cleanNotes($data['negatives'] ?? []),
             ]
@@ -162,13 +170,35 @@ class VolunteerEvaluationController extends Controller
             'axes.*.qs.*.id' => ['required', 'string', self::ID_RULE],
             'axes.*.qs.*.g' => 'nullable|string|max:190',
             'axes.*.qs.*.t' => 'required|string|max:1000',
+            'axes.*.qs.*.type' => 'nullable|in:' . implode(',', self::TYPES),
+            'axes.*.qs.*.options' => 'nullable|array|max:30',
+            'axes.*.qs.*.options.*.id' => ['required', 'string', self::ID_RULE],
+            'axes.*.qs.*.options.*.label' => 'required|string|max:255',
         ], [
             'axes.*.qs.required' => 'كل محور يحتاج سؤالاً واحداً على الأقل.',
             'axes.*.qs.min' => 'كل محور يحتاج سؤالاً واحداً على الأقل.',
             'roles.*.name.required' => 'اكتب اسم كل مهمة.',
             'axes.*.title.required' => 'اكتب عنوان كل محور.',
             'axes.*.qs.*.t.required' => 'اكتب نص كل سؤال.',
+            'axes.*.qs.*.options.*.label.required' => 'اكتب نص كل خيار.',
         ]);
+
+        // A choice question needs at least two distinct options
+        foreach ($data['axes'] as $axis) {
+            foreach ($axis['qs'] as $q) {
+                if (!in_array($q['type'] ?? 'rating', self::CHOICE_TYPES, true)) {
+                    continue;
+                }
+                $options = $q['options'] ?? [];
+                if (count($options) < 2) {
+                    throw ValidationException::withMessages(['axes' => "أضف خيارين على الأقل للسؤال: «{$q['t']}»."]);
+                }
+                $ids = array_column($options, 'id');
+                if (count($ids) !== count(array_unique($ids))) {
+                    throw ValidationException::withMessages(['axes' => "يوجد خياران بنفس المعرّف في السؤال: «{$q['t']}»."]);
+                }
+            }
+        }
 
         // Question ids must be unique across axes: ratings are keyed by them
         $questionIds = collect($data['axes'])->flatMap(fn ($a) => array_column($a['qs'], 'id'));
@@ -181,11 +211,7 @@ class VolunteerEvaluationController extends Controller
             'id' => $a['id'],
             'title' => trim($a['title']),
             'roles' => array_values(array_intersect($a['roles'] ?? [], $roleIds)),
-            'qs' => array_map(fn ($q) => [
-                'id' => $q['id'],
-                'g' => trim((string) ($q['g'] ?? '')),
-                't' => trim($q['t']),
-            ], $a['qs']),
+            'qs' => array_map(fn ($q) => $this->cleanQuestion($q), $a['qs']),
         ], $data['axes']);
 
         $evaluation->update([
@@ -290,17 +316,7 @@ class VolunteerEvaluationController extends Controller
             $skipped = $rows->where('status', 'skipped')->count();
             $overall = $rows->pluck('overall')->filter(fn ($v) => $v > 0);
 
-            $questions = collect($axis['qs'] ?? [])->map(function ($q) use ($rows) {
-                $values = $rows->map(fn ($r) => (int) (($r->ratings ?? [])[$q['id']] ?? 0))->filter(fn ($v) => $v > 0);
-
-                return [
-                    'id' => $q['id'],
-                    'g' => $q['g'] ?? '',
-                    't' => $q['t'],
-                    'average' => $values->isEmpty() ? null : round($values->avg(), 2),
-                    'count' => $values->count(),
-                ];
-            })->values();
+            $questions = collect($axis['qs'] ?? [])->map(fn ($q) => $this->questionResult($q, $rows))->values();
 
             return [
                 'id' => $axis['id'],
@@ -431,6 +447,106 @@ class VolunteerEvaluationController extends Controller
                 ->mapWithKeys(fn (VolunteerEvaluationAnswer $a) => [$a->axis_id => $a->toClient()])
                 ->all(),
         ];
+    }
+
+    public static function typeOf(array $question): string
+    {
+        $type = $question['type'] ?? 'rating';
+
+        return in_array($type, self::TYPES, true) ? $type : 'rating';
+    }
+
+    /** A question as stored: options only for the choice types. */
+    private function cleanQuestion(array $q): array
+    {
+        $type = self::typeOf($q);
+        $clean = [
+            'id' => $q['id'],
+            'g' => trim((string) ($q['g'] ?? '')),
+            't' => trim($q['t']),
+            'type' => $type,
+        ];
+        if (in_array($type, self::CHOICE_TYPES, true)) {
+            $clean['options'] = array_map(fn ($o) => ['id' => $o['id'], 'label' => trim($o['label'])], $q['options']);
+        }
+
+        return $clean;
+    }
+
+    /**
+     * Keeps the answers that fit each question's type: text up to 2000
+     * characters, yes / no, one option id, or a list of option ids. Anything
+     * else (an old answer after a type change, an unknown option) is dropped.
+     */
+    private function cleanResponses($questions, array $responses): array
+    {
+        $clean = [];
+        foreach ($questions as $q) {
+            $value = $responses[$q['id']] ?? null;
+            if ($value === null) {
+                continue;
+            }
+            $optionIds = array_column($q['options'] ?? [], 'id');
+
+            $kept = match (self::typeOf($q)) {
+                'text' => is_string($value) && trim($value) !== '' ? mb_substr(trim($value), 0, 2000) : null,
+                'yesno' => in_array($value, ['yes', 'no'], true) ? $value : null,
+                'single' => is_string($value) && in_array($value, $optionIds, true) ? $value : null,
+                'multi' => is_array($value)
+                    ? (array_values(array_intersect($optionIds, array_filter($value, 'is_string'))) ?: null)
+                    : null,
+                default => null,
+            };
+            if ($kept !== null) {
+                $clean[$q['id']] = $kept;
+            }
+        }
+
+        return $clean;
+    }
+
+    /** The numbers of one question, by its type. */
+    private function questionResult(array $q, $rows): array
+    {
+        $type = self::typeOf($q);
+        $base = ['id' => $q['id'], 'g' => $q['g'] ?? '', 't' => $q['t'], 'type' => $type, 'average' => null];
+
+        if ($type === 'rating') {
+            $values = $rows->map(fn ($r) => (int) (($r->ratings ?? [])[$q['id']] ?? 0))->filter(fn ($v) => $v > 0);
+
+            return array_merge($base, [
+                'average' => $values->isEmpty() ? null : round($values->avg(), 2),
+                'count' => $values->count(),
+            ]);
+        }
+
+        $values = $rows->map(fn ($r) => ($r->responses ?? [])[$q['id']] ?? null)->filter(fn ($v) => $v !== null && $v !== '' && $v !== []);
+
+        if ($type === 'text') {
+            $texts = $values->filter(fn ($v) => is_string($v))->values();
+
+            return $base + ['count' => $texts->count(), 'texts' => $texts];
+        }
+
+        if ($type === 'yesno') {
+            $values = $values->filter(fn ($v) => $v === 'yes' || $v === 'no');
+
+            return $base + [
+                'count' => $values->count(),
+                'yes' => $values->filter(fn ($v) => $v === 'yes')->count(),
+                'no' => $values->filter(fn ($v) => $v === 'no')->count(),
+            ];
+        }
+
+        // single / multi: an answer saved before a type change is read as a list
+        $chosen = $values->map(fn ($v) => is_array($v) ? $v : [$v]);
+        $options = collect($q['options'] ?? [])->map(fn ($o) => [
+            'id' => $o['id'],
+            'label' => $o['label'],
+            'count' => $chosen->filter(fn ($ids) => in_array($o['id'], $ids, true))->count(),
+        ])->values();
+
+        return $base + ['count' => $chosen->filter(fn ($ids) => $options->whereIn('id', $ids)->isNotEmpty())->count(), 'options' => $options];
     }
 
     /** Drops empty rows and trims the texts of positives / negatives. */
